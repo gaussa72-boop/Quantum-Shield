@@ -672,3 +672,10 @@ with app.app_context():
                 if not Site.query.filter_by(slug=item["slug"]).first():
                     db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48), membership_enabled=item.get("membership_enabled", True)))
         db.session.commit()
+    for registered_site in Site.query.filter_by(webhook_token=None).all():
+        registered_site.webhook_token = secrets.token_urlsafe(48)
+    if PREMIUM_OWNER_EMAIL:
+        Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update({"is_lifetime_premium": True}, synchronize_session=False)
+    if ADMIN_OWNER_EMAIL:
+        Member.query.filter(func.lower(Member.email) == ADMIN_OWNER_EMAIL).update({"role": "superadmin", "is_lifetime_premium": True}, synchronize_session=False)
+    db.session.commit()
