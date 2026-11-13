@@ -200,9 +200,17 @@ def admin_required(fn):
         if not session.get("admin_id"):
             return redirect(url_for("admin_login"))
         admin = db.session.get(Admin, session["admin_id"])
-        if not admin:
+        # Fail closed: the configured owner mailbox is the only central administrator.
+        if not admin or not ADMIN_OWNER_EMAIL or (admin.email or "").strip().lower() != ADMIN_OWNER_EMAIL or admin.role != "superadmin":
             session.clear()
             return redirect(url_for("admin_login"))
+        now = datetime.now(timezone.utc).timestamp()
+        authenticated_at = float(session.get("admin_auth_at", now))
+        last_seen = float(session.get("admin_last_seen", authenticated_at))
+        if now - authenticated_at > 8 * 60 * 60 or now - last_seen > 30 * 60:
+            session.clear()
+            return redirect(url_for("admin_login"))
+        session["admin_last_seen"] = now
         return fn(*args, **kwargs)
     return wrapped
 
@@ -672,6 +680,8 @@ def admin_login_post():
     data = request.form
     email = data.get("email", "").strip().lower()
     password = data.get("password", "")
+    if not ADMIN_OWNER_EMAIL or email != ADMIN_OWNER_EMAIL:
+        return render_template_string(LOGIN_HTML, error="Dieses Konto ist nicht als alleiniger ULTIMA-Inhaber freigegeben."), 401
 
     # Owner SSO: accept the same credentials used on either Rothshild property.
     # Only the configured owner email with a verified superadmin member account
@@ -708,6 +718,10 @@ def admin_login_post():
     session["admin_id"] = admin.id
     session["admin_email"] = admin.email
     session["csrf"] = secrets.token_urlsafe(32)
+    session["admin_auth_at"] = datetime.now(timezone.utc).timestamp()
+    session["admin_last_seen"] = session["admin_auth_at"]
+    admin.role = "superadmin"
+    db.session.commit()
     session.permanent = True
     audit("admin:" + admin.email, "admin.login")
     return redirect(url_for("admin_home"))
