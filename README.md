@@ -1,8 +1,8 @@
-# ULTIMA Membership Core
+# ULTIMA Membership & Credit Core
 
-Central administration and membership API for the user's Render portfolio.
+Central membership and credit API for the non-Rothshild Render portfolio. Rothshild sites are explicitly excluded.
 
-## Architecture
+## Membership architecture
 - Every website has a distinct slug and isolated member namespace (site_id). No cross-site single sign-on.
 - Members register and authenticate separately for each website.
 - Central admin can register websites, view membership counts, and manage members per website.
@@ -10,6 +10,26 @@ Central administration and membership API for the user's Render portfolio.
 - Passwords are stored as scrypt hashes; API tokens are signed and expire after 12 hours; logout revokes the current token version.
 - Admin sessions use secure, HttpOnly, SameSite cookies and CSRF tokens.
 - Audit log stores administrative actions, never passwords or tokens.
+
+## Credit wallet and Bitcoin top-ups
+- Each member has a separate credit balance per website.
+- 1 credit = 1 USD. Minimum top-up: 5 USD, whole-dollar increments.
+- Bitcoin network: Bitcoin mainnet.
+- Receiving wallet: bc1qs0quxgqq26kawsq8al0kcxx3690jnp3a3zflce
+- A member submits the amount and 64-character Bitcoin transaction ID. The payment remains pending.
+- The central administrator must independently verify the transaction, destination, confirmations and USD-equivalent amount before approving it. Approval credits the member's balance once; duplicate TXIDs are rejected.
+- No automatic on-chain verification or live BTC/USD pricing is claimed in this version.
+
+## Default per-generation prices
+- ai_generation: 1 credit
+- image_generation: 2 credits
+- video_generation: 5 credits
+- music_generation: 3 credits
+- game_generation: 25 credits
+- dlc_generation: 15 credits
+- mod_generation: 10 credits
+
+These are server-side prices in GENERATION_PRICES; configure them to match actual model/API costs. Apps should call /api/<slug>/credits/consume only after the generation has succeeded, with a unique request_id. Failed generations should not be charged. The endpoint is idempotent for a given member, site and request ID.
 
 ## Required Render environment
 - DATABASE_URL: persistent PostgreSQL connection string (use Render's Internal Database URL).
@@ -20,17 +40,18 @@ Central administration and membership API for the user's Render portfolio.
 
 ## Routes
 - /setup one-time first-admin setup
-- /admin/login, /admin central admin
+- /admin/login, /admin central admin and pending payment approval
 - /admin/site/<slug> central member management
 - /api/<slug>/register, /login, /me, /profile, /logout
+- /api/<slug>/credits/balance, /credits/history, /credits/purchase, /credits/consume
 - /health
 
 ## Website widget
-Include membership-widget.js in each website and initialize it with that website's unique slug:
-<script src="https://ultima-membership-core.onrender.com/membership-widget.js"></script>
+Include the widget on each non-Rothshild website:
+<script src="https://ultima-membership-api.onrender.com/membership-widget.js"></script>
 <script>UltimaMembership.init({siteSlug:"my-site",brand:"My Site"});</script>
 
-The widget uses sessionStorage (not persistent localStorage) for its short-lived bearer token. Each site's users are isolated by its slug.
+The widget uses sessionStorage for its short-lived bearer token. Each site's members and credit balance are isolated by its slug.
 
-## Production gate
-The first Render Postgres instance created for evaluation is free and expires on 2026-12-13. Do not use it for production or real member records. Before production, upgrade/create a persistent paid PostgreSQL database, configure its internal URL, Redis-backed rate limiting, email verification and password reset, administrator MFA, and exact allowed origins. The API currently provides registration/login/profile/logout and central member administration; it is not yet a complete production identity provider.
+## Important deployment and security status
+The initial Render test database is free and expires on 2026-12-13. Do not use it for production or real member balances. Before real payments: use a persistent paid database, Redis-backed rate limiting, email verification and password reset, MFA for administrators, strict origins, operational backups, and an independent Bitcoin transaction verification procedure. The app currently records TXIDs and supports manual review; it does not independently query the Bitcoin network or determine fiat exchange value.
