@@ -150,6 +150,20 @@ class StoreOrder(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint("site_id", "external_order_id", name="uq_store_order_external"),)
 
+class PremiumApplication(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    website_url = db.Column(db.String(500), nullable=False)
+    details = db.Column(db.String(2000), default="", nullable=False)
+    status = db.Column(db.String(24), default="pending", nullable=False, index=True)
+    stripe_session_id = db.Column(db.String(255), nullable=True, unique=True)
+    stripe_subscription_id = db.Column(db.String(255), nullable=True, index=True)
+    checkout_url = db.Column(db.String(1000), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    approved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     actor = db.Column(db.String(255), nullable=False)
@@ -709,6 +723,151 @@ def admin_logout():
     session.clear()
     return redirect(url_for("admin_login"))
 
+PREMIUM_PRICE_EUR = Decimal("29.99")
+
+def send_premium_email(to_email, subject, body):
+    host = os.getenv("SMTP_HOST", "").strip()
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    sender = os.getenv("SMTP_FROM", user).strip()
+    if not all((host, user, password, sender, to_email)):
+        app.logger.warning("Premium email not sent: SMTP configuration incomplete")
+        return False
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = to_email
+    message.set_content(body)
+    try:
+        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as smtp:
+            smtp.starttls()
+            smtp.login(user, password)
+            smtp.send_message(message)
+        return True
+    except Exception as exc:
+        app.logger.warning("Premium email failed: %s", type(exc).__name__)
+        return False
+
+@app.post("/api/premium/applications")
+@limiter.limit("5 per hour")
+def premium_application_create():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()[:160]
+    email = str(data.get("email", "")).strip().lower()
+    website = str(data.get("website_url", "")).strip()
+    details = str(data.get("details", "")).strip()[:2000]
+    parsed = urlparse(website)
+    if not name or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email) or len(email) > 255:
+        return jsonify(error="Bitte Name und gültige E-Mail-Adresse angeben."), 400
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return jsonify(error="Bitte eine gültige HTTPS-Webseitenadresse angeben."), 400
+    if PremiumApplication.query.filter_by(email=email, website_url=website).filter(PremiumApplication.status.in_(["pending","approved","checkout","active"])).first():
+        return jsonify(error="Für diese E-Mail und Webseite besteht bereits ein Antrag."), 409
+    application = PremiumApplication(name=name,email=email,website_url=website,details=details)
+    db.session.add(application)
+    db.session.commit()
+    admin_url = os.getenv("ULTIMA_PUBLIC_URL", request.url_root.rstrip("/")).rstrip("/") + "/admin/premium"
+    owner_sent = send_premium_email(ADMIN_OWNER_EMAIL, "ULTIMA Premium-Antrag wartet auf Freigabe", f"Neuer Antrag #{application.id}\\nName: {name}\\nE-Mail: {email}\\nWebseite: {website}\\nDetails: {details}\\n\\nBitte anmelden und Antrag prüfen: {admin_url}")
+    send_premium_email(email, "ULTIMA Premium-Antrag eingegangen", f"Hallo {name},\\n\\nDein Antrag für ULTIMA Premium (29,99 EUR monatlich) ist eingegangen. Nach Prüfung durch den Betreiber erhältst du den Zahlungslink.\\n\\nDein ULTIMA-Team")
+    audit("premium-applicant:" + email, "premium.application_submitted", None, str(application.id))
+    return jsonify(ok=True, application_id=application.id, status="pending", owner_notification_sent=owner_sent, message="Antrag eingegangen. Du erhältst nach der Betreiberfreigabe eine E-Mail mit dem sicheren Checkout-Link."), 201
+
+@app.get("/admin/premium")
+@admin_required
+def admin_premium():
+    applications = PremiumApplication.query.order_by(PremiumApplication.created_at.desc()).limit(300).all()
+    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Premium</title><style>body{background:#080b14;color:#edf1ff;font:15px system-ui;padding:24px;max-width:1100px;margin:auto}.card{background:#11182a;border:1px solid #26304a;border-radius:14px;padding:16px;margin:12px 0}button{padding:10px;background:#293b68;color:white;border:0;border-radius:8px}a{color:#8ce4f0}</style><h1>ULTIMA Premium · Anträge</h1><p><a href="/admin">← Control Center</a> · Tarif: <b>29,99 EUR / Monat</b></p>{% for a in applications %}<section class="card"><h3>#{{a.id}} · {{a.name}} · {{a.status}}</h3><p>{{a.email}} · <a href="{{a.website_url}}" target="_blank" rel="noopener">{{a.website_url}}</a></p><p>{{a.details}}</p><small>Eingegangen: {{a.created_at}} · Freigabe: {{a.approved_at or "offen"}} · Zahlung: {{a.paid_at or "offen"}}</small>{% if a.status == "pending" %}<form method="post" action="/admin/premium/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><button>Freigeben und Checkout senden</button></form><form method="post" action="/admin/premium/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form>{% elif a.checkout_url %}<p><a href="{{a.checkout_url}}">Checkout-Link</a></p>{% endif %}</section>{% else %}<p>Noch keine Premium-Anträge.</p>{% endfor %}</html>""",applications=applications,csrf=session["csrf"])
+
+@app.post("/admin/premium/<int:application_id>/<action>")
+@admin_required
+def admin_premium_decision(application_id, action):
+    if not admin_csrf_ok():
+        abort(400)
+    application = db.session.get(PremiumApplication, application_id)
+    if not application or application.status != "pending":
+        abort(404)
+    if action == "reject":
+        application.status = "rejected"
+        db.session.commit()
+        send_premium_email(application.email,"ULTIMA Premium-Antrag","Dein Antrag wurde derzeit nicht freigegeben. Bei Fragen antworte bitte auf diese E-Mail.")
+        audit("admin","premium.application_rejected",None,str(application.id))
+        return redirect(url_for("admin_premium"))
+    if action != "approve":
+        abort(400)
+    stripe_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    if not stripe_key:
+        return "Stripe ist noch nicht konfiguriert. Hinterlege STRIPE_SECRET_KEY in Render und versuche es erneut.", 503
+    base = os.getenv("ULTIMA_PUBLIC_URL", request.url_root.rstrip("/")).rstrip("/")
+    fields = {
+        "mode":"subscription",
+        "success_url":base+"/premium/success?session_id={CHECKOUT_SESSION_ID}",
+        "cancel_url":base+"/premium/cancel",
+        "customer_email":application.email,
+        "client_reference_id":str(application.id),
+        "metadata[application_id]":str(application.id),
+        "line_items[0][price_data][currency]":"eur",
+        "line_items[0][price_data][unit_amount]":"2999",
+        "line_items[0][price_data][recurring][interval]":"month",
+        "line_items[0][price_data][product_data][name]":"ULTIMA Premium",
+        "line_items[0][price_data][product_data][description]":"Monatliches Premium-Abonnement für die ULTIMA-Webseitenverwaltung",
+        "line_items[0][quantity]":"1"
+    }
+    body = __import__("urllib.parse",fromlist=["urlencode"]).urlencode(fields).encode("utf-8")
+    req = Request("https://api.stripe.com/v1/checkout/sessions",data=body,headers={"Authorization":"Bearer "+stripe_key,"Content-Type":"application/x-www-form-urlencoded"},method="POST")
+    try:
+        with urlopen(req,timeout=20) as response:
+            checkout = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        app.logger.warning("Stripe checkout creation failed: %s",type(exc).__name__)
+        return "Stripe-Checkout konnte nicht erstellt werden. Bitte Stripe-Konfiguration prüfen.", 502
+    application.status="checkout"
+    application.approved_at=datetime.now(timezone.utc)
+    application.stripe_session_id=checkout.get("id")
+    application.checkout_url=checkout.get("url")
+    db.session.commit()
+    sent=send_premium_email(application.email,"ULTIMA Premium freigegeben – Zahlung abschließen",f"Hallo {application.name},\\n\\nDein Antrag wurde genehmigt. Schließe hier dein ULTIMA-Premium-Abo für 29,99 EUR monatlich ab:\\n{application.checkout_url}\\n\\nApple Pay und Google Pay werden im Stripe-Checkout angezeigt, sofern dein Gerät/Browser und Stripe-Konto dafür berechtigt sind.\\n\\nNach bestätigter Zahlung wird dein Zugang automatisch aktiviert.")
+    audit("admin","premium.application_approved",None,str(application.id))
+    return render_template_string("<!doctype html><meta charset='utf-8'><body style='background:#080b14;color:white;font:16px system-ui;padding:30px'><h1>Antrag freigegeben</h1><p>Checkout wurde erstellt. E-Mail {{'versendet' if sent else 'nicht versendet – SMTP prüfen'}}.</p><p><a style='color:#8ce4f0' href='{{url}}'>Checkout öffnen</a></p><a href='/admin/premium' style='color:#8ce4f0'>Zurück</a></body>",sent=sent,url=application.checkout_url)
+
+@app.post("/stripe/webhook")
+@limiter.limit("120 per minute")
+def stripe_webhook():
+    secret=os.getenv("STRIPE_WEBHOOK_SECRET","").strip()
+    signature=request.headers.get("Stripe-Signature","")
+    if not secret or not signature:
+        return jsonify(error="Webhook nicht konfiguriert."),400
+    try:
+        parts=dict(item.split("=",1) for item in signature.split(",") if "=" in item)
+        timestamp=parts.get("t","")
+        signed=timestamp+"."+request.get_data(as_text=True)
+        expected=hmac.new(secret.encode("utf-8"),signed.encode("utf-8"),hashlib.sha256).hexdigest()
+        if abs(datetime.now(timezone.utc).timestamp()-int(timestamp))>300 or not secrets.compare_digest(expected,parts.get("v1","")):
+            return jsonify(error="Ungültige Webhook-Signatur."),400
+        event=request.get_json(force=True)
+    except Exception:
+        return jsonify(error="Ungültiger Webhook."),400
+    if event.get("type")=="checkout.session.completed":
+        obj=event.get("data",{}).get("object",{})
+        app_id=(obj.get("metadata") or {}).get("application_id") or obj.get("client_reference_id")
+        application=db.session.get(PremiumApplication,int(app_id)) if str(app_id or "").isdigit() else None
+        if application and obj.get("payment_status")=="paid" and obj.get("mode")=="subscription":
+            application.status="active"
+            application.stripe_subscription_id=obj.get("subscription")
+            application.paid_at=datetime.now(timezone.utc)
+            db.session.commit()
+            send_premium_email(application.email,"ULTIMA Premium ist freigeschaltet",f"Hallo {application.name},\\n\\ndeine Zahlung wurde bestätigt. Dein ULTIMA-Premiumzugang ist jetzt aktiviert. Anmeldung: {os.getenv('ULTIMA_PUBLIC_URL',request.url_root).rstrip('/')}/admin/login")
+            audit("stripe-webhook","premium.subscription_activated",None,str(application.id))
+    return jsonify(received=True)
+
+@app.get("/premium/success")
+def premium_success():
+    return "<!doctype html><meta charset='utf-8'><body style='font:16px system-ui;background:#080b14;color:white;padding:30px'><h1>Zahlung wird bestätigt</h1><p>Dein Zugang wird nach der verifizierten Stripe-Bestätigung automatisch freigeschaltet. Du erhältst eine E-Mail.</p></body>"
+
+@app.get("/premium/cancel")
+def premium_cancel():
+    return "<!doctype html><meta charset='utf-8'><body style='font:16px system-ui;background:#080b14;color:white;padding:30px'><h1>Checkout abgebrochen</h1><p>Es wurde keine Zahlung bestätigt.</p></body>"
+
 @app.get("/admin")
 @admin_required
 def admin_home():
@@ -880,7 +1039,7 @@ def admin_overview():
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
-ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/credits">Credits- und Premium-Käufe verwalten →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-ähnlich</h3><p>Neue Webprojekte registrieren, bestehende Dienste anbinden und je Website eigene Inhalte und Einstellungen pflegen.</p><a href="#sites">Webseiten verwalten ↓</a></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
+ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/credits">Credits- und Premium-Käufe verwalten →</a> · <a href="/admin/premium">ULTIMA Premium-Anträge verwalten →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-ähnlich</h3><p>Neue Webprojekte registrieren, bestehende Dienste anbinden und je Website eigene Inhalte und Einstellungen pflegen.</p><a href="#sites">Webseiten verwalten ↓</a></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
 TOKEN_ONCE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Token einmalig anzeigen</title><body style="background:#080b14;color:#edf1ff;font:16px system-ui;max-width:760px;margin:8vh auto;padding:24px"><h1>Neuer Integrationstoken</h1><p>Website: {{site.name}}</p><p><b>Dieser Token wird nur jetzt angezeigt.</b> Kopiere ihn in die Secret-/Environment-Einstellungen der angebundenen Website. Er wird nicht erneut gespeichert oder angezeigt.</p><pre id="token" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#11182a;padding:18px;border-radius:12px">{{token}}</pre><button onclick="navigator.clipboard.writeText(document.getElementById('token').textContent)">Token kopieren</button> <a href="/admin/site/{{site.slug}}" style="color:#8ce4f0">Zurück zur Website</a></body></html>"""
 SITE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} · Mitglieder</title><body style="background:#090d18;color:#fff;font:15px system-ui;margin:0;padding:24px"><h1>{{site.name}} · Mitgliederverwaltung</h1><p>Konten dieser Webseite sind von allen anderen Plattformen getrennt.</p><h2>Website-Einstellungen</h2><form method="post" action="/admin/site/{{site.slug}}/settings"><input type="hidden" name="csrf" value="{{csrf}}"><label>Name <input name="name" value="{{site.name}}" required></label><label>Website-URL <input name="origin" value="{{site.origin}}" required></label><label><input type="checkbox" name="is_active" {% if site.is_active %}checked{% endif %}> Website aktiv</label><label><input type="checkbox" name="membership_enabled" {% if site.membership_enabled %}checked{% endif %}> Mitglieder/Credits aktiv</label><button>Website-Einstellungen speichern</button></form><p>Integrationsschlüssel: <b>{{"aktiv" if site.webhook_token_hash else "widerrufen / nicht vorhanden"}}</b>. Der geheime Wert wird nicht gespeichert oder erneut angezeigt.</p><h2>Mitglieder-Widget installieren</h2><p>Den folgenden Code in den gemeinsamen Website-Footer vor &lt;/body&gt; einsetzen. Mitgliederkonten bleiben pro Webseite getrennt.</p><textarea readonly rows="7" style="width:100%;max-width:900px;background:#0b1222;color:#fff;padding:12px;border:1px solid #36415f;border-radius:9px">{{widget_snippet}}</textarea><p><small>Neue Website: zuerst im Control Center registrieren, dann diesen Code im Website-Repository einfügen und deployen.</small></p><form method="post" action="/admin/site/{{site.slug}}/integration-token"><input type="hidden" name="csrf" value="{{csrf}}"><button>{% if site.webhook_token_hash %}Token erneuern (alten sofort sperren){% else %}Token erzeugen{% endif %}</button></form>{% if site.webhook_token_hash %}<form method="post" action="/admin/site/{{site.slug}}/integration-token/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Token widerrufen</button></form>{% endif %}<h2>Bestellungen & Rechnungen</h2><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th><th>Bearbeiten</th></tr>{% for o in orders %}<tr><td>{{o.order_number}}</td><td>{{o.customer_name}}<br>{{o.customer_email}}</td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Öffnen</a></td><td><form method="post" action="/admin/order/{{o.id}}/update"><input type="hidden" name="csrf" value="{{csrf}}"><select name="payment_status"><option>{{o.payment_status}}</option><option>pending</option><option>paid</option><option>failed</option><option>refunded</option></select><select name="fulfillment_status"><option>{{o.fulfillment_status}}</option><option>processing</option><option>fulfilled</option><option>shipped</option><option>delivered</option><option>cancelled</option></select><button>Speichern</button></form></td></tr>{% endfor %}</table><h2>Credits-Käufe</h2><table width="100%" cellpadding="8" style="border-collapse:collapse;background:#121a2b"><tr><th>Betrag</th><th>Credits</th><th>TXID</th><th>Status</th></tr>{% for p in payments %}<tr><td>{{p.amount_usd}} USD</td><td>{{p.credits}}</td><td><code>{{p.txid}}</code></td><td>{{p.status}}</td></tr>{% endfor %}</table><h2>Credits & Premium-Käufe</h2><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th>Mitglied</th><th>Betrag</th><th>Credits</th><th>TXID</th><th>Status</th><th>Aktion</th></tr>{% for p in payments %}<tr><td>{{p.member_id}}</td><td>{{p.amount_usd}} USD</td><td>{{p.credits}}</td><td><code>{{p.txid}}</code></td><td>{{p.status}}</td><td>{% if p.status == "pending" %}<form method="post" action="/admin/payment/{{p.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><button>Freigeben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form>{% endif %}</td></tr>{% endfor %}</table><h2>Credit-Verlauf</h2><table width="100%" cellpadding="8"><tr><th>Datum</th><th>Mitglied</th><th>Änderung</th><th>Stand</th><th>Grund</th></tr>{% for x in ledger %}<tr><td>{{x.created_at}}</td><td>{{x.member_id}}</td><td>{{x.delta}}</td><td>{{x.balance_after}}</td><td>{{x.reason}}</td></tr>{% endfor %}</table><h2>Mitglieder</h2><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th align="left">Benutzer</th><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Aktion</th></tr>{% for m in members %}<tr><td>{{m.username}}</td><td>{{m.email}}</td><td>{{m.role}}</td><td>{{m.status}}</td><td><form method="post" action="/admin/site/{{site.slug}}/member/{{m.id}}"><input type="hidden" name="csrf" value="{{csrf}}"><button name="action" value="promote">Admin</button><button name="action" value="disable">Sperren</button><button name="action" value="enable">Aktivieren</button></form></td></tr>{% endfor %}</table></body></html>"""
 INVOICE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><title>Rechnung {{order.invoice_number or order.order_number}}</title><style>body{font:15px Arial;max-width:850px;margin:40px auto;color:#111}header{display:flex;justify-content:space-between;border-bottom:2px solid #222;padding-bottom:20px}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #ddd;text-align:left}.right{text-align:right}@media print{button{display:none}}</style><button onclick="print()">Drucken / als PDF speichern</button><header><div><h1>Rechnung</h1><b>{{site.name}}</b></div><div><b>{{order.invoice_number or order.order_number}}</b><br>{{order.created_at}}</div></header><p>Rechnung an: {{order.customer_name}} · {{order.customer_email}}</p><table><tr><th>Artikel</th><th>Menge</th><th>Einzelpreis</th><th>Gesamt</th></tr>{% for item in order.items_json or [] %}<tr><td>{{item.name}}</td><td>{{item.quantity}}</td><td>{{item.unit_price}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><h2 class="right">Gesamt: {{order.total_amount}} {{order.currency}}</h2><p>Zahlungsstatus: {{order.payment_status}} · Bestellstatus: {{order.fulfillment_status}}</p>{% if order.invoice_url %}<p><a href="{{order.invoice_url}}">Originalrechnung öffnen</a></p>{% endif %}</html>"""
