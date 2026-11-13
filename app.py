@@ -3,6 +3,7 @@ import re
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 
 from flask import Flask, jsonify, request, session, redirect, url_for, render_template_string, abort, send_from_directory
@@ -11,7 +12,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import UniqueConstraint, func
+from sqlalchemy import UniqueConstraint, func, inspect, text
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "")
@@ -39,6 +40,9 @@ limiter = Limiter(get_remote_address, app=app, default_limits=["300 per hour"], 
 serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-membership-v1")
 ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()}
 SETUP_TOKEN = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
+BTC_ADDRESS = "bc1qs0quxgqq26kawsq8al0kcxx3690jnp3a3zflce"
+BTC_NETWORK = "Bitcoin mainnet"
+GENERATION_PRICES = {"ai_generation": 1, "image_generation": 2, "video_generation": 5, "music_generation": 3, "game_generation": 25, "dlc_generation": 15, "mod_generation": 10}
 
 class Site(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -68,8 +72,33 @@ class Member(db.Model):
     role = db.Column(db.String(32), default="member", nullable=False)
     status = db.Column(db.String(24), default="active", nullable=False)
     token_version = db.Column(db.Integer, default=0, nullable=False)
+    credit_balance = db.Column(db.Integer, default=0, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint("site_id", "email", name="uq_member_site_email"), UniqueConstraint("site_id", "username", name="uq_member_site_username"))
+
+class CryptoPayment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site_id = db.Column(db.Integer, db.ForeignKey("site.id"), nullable=False, index=True)
+    member_id = db.Column(db.Integer, db.ForeignKey("member.id"), nullable=False, index=True)
+    amount_usd = db.Column(db.Numeric(12, 2), nullable=False)
+    credits = db.Column(db.Integer, nullable=False)
+    txid = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    network = db.Column(db.String(32), default="Bitcoin mainnet", nullable=False)
+    status = db.Column(db.String(24), default="pending", nullable=False, index=True)
+    reviewed_by = db.Column(db.String(255), nullable=True)
+    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class CreditLedger(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site_id = db.Column(db.Integer, db.ForeignKey("site.id"), nullable=False, index=True)
+    member_id = db.Column(db.Integer, db.ForeignKey("member.id"), nullable=False, index=True)
+    delta = db.Column(db.Integer, nullable=False)
+    balance_after = db.Column(db.Integer, nullable=False)
+    reason = db.Column(db.String(80), nullable=False)
+    reference = db.Column(db.String(128), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    __table_args__ = (UniqueConstraint("site_id", "member_id", "reference", name="uq_credit_ledger_reference"),)
 
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -245,6 +274,97 @@ def logout(slug):
         db.session.commit()
     return jsonify(ok=True)
 
+@app.get("/api/<slug>/credits/balance")
+def credit_balance(slug):
+    site, member = current_member(slug)
+    if not site:
+        return jsonify(error="Webseite nicht gefunden."), 404
+    if not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    return jsonify(balance=member.credit_balance, currency="USD", credit_value="1 credit = 1 USD", prices=GENERATION_PRICES, wallet=BTC_ADDRESS, network=BTC_NETWORK)
+
+@app.get("/api/<slug>/credits/history")
+def credit_history(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    ledger = CreditLedger.query.filter_by(site_id=site.id, member_id=member.id).order_by(CreditLedger.created_at.desc()).limit(100).all()
+    payments = CryptoPayment.query.filter_by(site_id=site.id, member_id=member.id).order_by(CryptoPayment.created_at.desc()).limit(50).all()
+    return jsonify(ledger=[{"delta": x.delta, "balance": x.balance_after, "reason": x.reason, "created_at": x.created_at.isoformat()} for x in ledger], payments=[{"id": p.id, "amount_usd": str(p.amount_usd), "credits": p.credits, "txid": p.txid, "status": p.status, "created_at": p.created_at.isoformat()} for p in payments])
+
+@app.post("/api/<slug>/credits/purchase")
+@limiter.limit("5 per hour")
+def credit_purchase(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        amount = Decimal(str(data.get("amount_usd", ""))).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return jsonify(error="Ungültiger USD-Betrag."), 400
+    txid = str(data.get("txid", "")).strip().lower()
+    if amount < Decimal("5.00") or amount > Decimal("10000.00") or amount != amount.to_integral_value():
+        return jsonify(error="Bitte einen ganzen USD-Betrag zwischen 5 und 10.000 eingeben."), 400
+    if not re.fullmatch(r"[a-f0-9]{64}", txid):
+        return jsonify(error="Bitte eine gültige Bitcoin-Transaktions-ID mit 64 Hex-Zeichen eingeben."), 400
+    if CryptoPayment.query.filter_by(txid=txid).first():
+        return jsonify(error="Diese Transaktions-ID wurde bereits eingereicht."), 409
+    payment = CryptoPayment(site_id=site.id, member_id=member.id, amount_usd=amount, credits=int(amount), txid=txid)
+    db.session.add(payment)
+    db.session.commit()
+    audit("member:" + member.username, "crypto.payment_submitted", site.slug, str(payment.id))
+    return jsonify(ok=True, payment_id=payment.id, status="pending", message="Zahlung eingereicht. Credits werden erst nach manueller Prüfung und Bestätigung freigeschaltet."), 201
+
+@app.post("/api/<slug>/credits/consume")
+def consume_credits(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    feature = str(data.get("feature", ""))
+    request_id = str(data.get("request_id", "")).strip()
+    cost = GENERATION_PRICES.get(feature)
+    if not cost or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", request_id):
+        return jsonify(error="Unbekannte Funktion oder ungültige request_id."), 400
+    reference = "generation:" + request_id
+    existing = CreditLedger.query.filter_by(site_id=site.id, member_id=member.id, reference=reference).first()
+    if existing:
+        return jsonify(ok=True, already_charged=True, charged=abs(min(existing.delta, 0)), balance=member.credit_balance)
+    if member.credit_balance < cost:
+        return jsonify(error="Nicht genügend Credits.", required=cost, balance=member.credit_balance, upgrade_url="/credits"), 402
+    member.credit_balance -= cost
+    db.session.add(CreditLedger(site_id=site.id, member_id=member.id, delta=-cost, balance_after=member.credit_balance, reason=feature, reference=reference))
+    db.session.commit()
+    return jsonify(ok=True, charged=cost, balance=member.credit_balance)
+
+@app.post("/admin/payment/<int:payment_id>/<action>")
+@admin_required
+def admin_payment_review(payment_id, action):
+    if not admin_csrf_ok():
+        abort(400)
+    payment = db.session.get(CryptoPayment, payment_id)
+    if not payment or payment.status != "pending":
+        abort(404)
+    if action == "approve":
+        member = Member.query.filter_by(id=payment.member_id, site_id=payment.site_id).with_for_update().first()
+        if not member:
+            abort(404)
+        reference = "payment:" + str(payment.id)
+        if not CreditLedger.query.filter_by(site_id=payment.site_id, member_id=member.id, reference=reference).first():
+            member.credit_balance += payment.credits
+            db.session.add(CreditLedger(site_id=payment.site_id, member_id=member.id, delta=payment.credits, balance_after=member.credit_balance, reason="bitcoin_topup", reference=reference))
+        payment.status = "confirmed"
+    elif action == "reject":
+        payment.status = "rejected"
+    else:
+        abort(400)
+    payment.reviewed_by = session.get("admin_email", "central-admin")
+    payment.reviewed_at = datetime.now(timezone.utc)
+    db.session.commit()
+    audit("admin", "payment." + action, payment.site.slug, str(payment.id))
+    return redirect(url_for("admin_home"))
+
 @app.get("/setup")
 def setup_page():
     if Admin.query.first():
@@ -281,6 +401,7 @@ def admin_login_post():
         return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig."), 401
     session.clear()
     session["admin_id"] = admin.id
+    session["admin_email"] = admin.email
     session["csrf"] = secrets.token_urlsafe(32)
     session.permanent = True
     audit("admin:" + admin.email, "admin.login")
@@ -302,7 +423,8 @@ def admin_home():
     for site in sites:
         site_data.append({"site": site, "count": Member.query.filter_by(site_id=site.id).count(), "admins": Member.query.filter_by(site_id=site.id, role="site_admin").count()})
     logs = AuditLog.query.order_by(AuditLog.created_at.desc()).limit(20).all()
-    return render_template_string(ADMIN_HTML, sites=site_data, logs=logs, csrf=session["csrf"], total=Member.query.count())
+    pending_payments = CryptoPayment.query.filter_by(status="pending").order_by(CryptoPayment.created_at.asc()).limit(100).all()
+    return render_template_string(ADMIN_HTML, sites=site_data, logs=logs, csrf=session["csrf"], total=Member.query.count(), payments=pending_payments, wallet=BTC_ADDRESS)
 
 @app.post("/admin/sites")
 @admin_required
@@ -401,16 +523,19 @@ def admin_overview():
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
-ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p>Getrennte Konten pro Webseite · zentrale Übersicht · individuelle Admin-Rechte</p><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Webseiten registrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
+ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p>Getrennte Konten pro Webseite · zentrale Übersicht · individuelle Admin-Rechte</p><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Webseiten registrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
 SITE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} · Mitglieder</title><body style="background:#090d18;color:#fff;font:15px system-ui;margin:0;padding:24px"><h1>{{site.name}} · Mitgliederverwaltung</h1><p>Konten dieser Webseite sind von allen anderen Plattformen getrennt.</p><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th align="left">Benutzer</th><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Aktion</th></tr>{% for m in members %}<tr><td>{{m.username}}</td><td>{{m.email}}</td><td>{{m.role}}</td><td>{{m.status}}</td><td><form method="post" action="/admin/site/{{site.slug}}/member/{{m.id}}"><input type="hidden" name="csrf" value="{{csrf}}"><button name="action" value="promote">Admin</button><button name="action" value="disable">Sperren</button><button name="action" value="enable">Aktivieren</button></form></td></tr>{% endfor %}</table></body></html>"""
 SITE_READONLY_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} Admin</title><body style="background:#090d18;color:#fff;font:15px system-ui;padding:24px"><h1>{{site.name}} · Lokale Administration</h1><p>Angemeldet als {{admin_name}}. Diese Ansicht ist auf deine Webseite begrenzt.</p><p>{{members|length}} Mitglieder geladen. Vollständige Aktionen erfolgen über die zentrale Admin-Konsole.</p></body></html>"""
 
 with app.app_context():
     db.create_all()
+    if "credit_balance" not in {col["name"] for col in inspect(db.engine).get_columns("member")}:
+        db.session.execute(text("ALTER TABLE member ADD COLUMN credit_balance INTEGER NOT NULL DEFAULT 0"))
+        db.session.commit()
     registry_path = os.path.join(os.path.dirname(__file__), "sites.json")
     if os.path.exists(registry_path):
         with open(registry_path, "r", encoding="utf-8") as registry_file:
             for item in json.load(registry_file):
-                if not Site.query.filter_by(slug=item["slug"]).first():
+                if item["slug"] not in {"royal-palace-4r57", "business-real-estate-membership"} and not Site.query.filter_by(slug=item["slug"]).first():
                     db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"]))
         db.session.commit()
