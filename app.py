@@ -362,6 +362,8 @@ def consume_credits(slug):
     existing = CreditLedger.query.filter_by(site_id=site.id, member_id=member.id, reference=reference).first()
     if existing:
         return jsonify(ok=True, already_charged=True, charged=abs(min(existing.delta, 0)), balance=member.credit_balance)
+    if member.is_lifetime_premium:
+        return jsonify(ok=True, charged=0, balance=member.credit_balance, premium=True)
     if member.credit_balance < cost:
         return jsonify(error="Nicht genügend Credits.", required=cost, balance=member.credit_balance, upgrade_url="/credits"), 402
     member.credit_balance -= cost
