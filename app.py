@@ -257,6 +257,10 @@ def home():
 def membership_widget():
     return send_from_directory(os.path.dirname(__file__), "membership-widget.js", mimetype="application/javascript")
 
+@app.get("/support-widget.js")
+def support_widget():
+    return send_from_directory(os.path.dirname(__file__), "support-widget.js", mimetype="application/javascript", max_age=300)
+
 @app.get("/health")
 def health():
     try:
