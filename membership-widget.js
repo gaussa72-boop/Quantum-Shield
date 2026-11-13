@@ -21,6 +21,47 @@ function init(opts={}){
  async function creditsView(){try{const [b,h]=await Promise.all([apiCall("/credits/balance"),apiCall("/credits/history")]);panel.innerHTML="<h3>Credits & Premium</h3><p><b>Guthaben: "+esc(b.balance)+" Credits</b></p><p><small>1 Credit = 1 USD · Bitcoin mainnet</small></p><p style='overflow-wrap:anywhere'><b>Wallet:</b><br>"+esc(b.wallet)+"</p><p><small>Preise pro erfolgreicher Generierung: "+Object.entries(b.prices).map(([k,v])=>esc(k)+": "+esc(v)+" cr").join(" · ")+"</small></p><form id='u-topup'><input name='amount_usd' type='number' min='5' max='10000' step='1' placeholder='Betrag in USD (5–10.000)' required><input name='txid' minlength='64' maxlength='64' placeholder='Bitcoin TXID (64 Zeichen)' required><button>Zahlung zur Prüfung einreichen</button></form><p role='status'></p><h4>Zahlungshistorie</h4><div id='u-history'></div><button class='secondary' id='u-creditback'>Zurück zum Profil</button>";const list=panel.querySelector("#u-history");for(const p of h.payments){const row=document.createElement("p");row.textContent="$"+p.amount_usd+" · "+p.credits+" Credits · "+p.status+" · "+p.txid.slice(0,16)+"…";list.append(row)}panel.querySelector("#u-creditback").onclick=render;panel.querySelector("#u-topup").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{const r=await apiCall("/credits/purchase","POST",{amount_usd:f.get("amount_usd"),txid:f.get("txid")});status(r.message);creditsView()}catch(err){status(err.message)}}}catch(e){panel.innerHTML="<h3>Credits</h3><p role='status'>"+esc(e.message)+"</p><button class='secondary' id='u-creditback'>Zurück</button>";panel.querySelector("#u-creditback").onclick=render}}
  function register(){panel.innerHTML="<h3>Konto erstellen</h3><p role='status'></p><form id='u-reg'><input name='email' type='email' placeholder='E-Mail' required><input name='username' placeholder='Benutzername' required minlength='3' maxlength='32'><input name='display_name' placeholder='Anzeigename'><input name='password' type='password' placeholder='Passwort (mind. 12 Zeichen)' required minlength='12'><button>Konto anlegen</button><button type='button' class='secondary' id='u-back'>Zurück</button></form><small>Mit der Registrierung gilt die Datenschutzerklärung dieser Webseite.</small>";panel.querySelector("#u-back").onclick=render;panel.querySelector("#u-reg").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{const d=await apiCall("/register","POST",{email:f.get("email"),username:f.get("username"),display_name:f.get("display_name"),password:f.get("password")});save(d.token);render()}catch(err){status(err.message)}}}
  function edit(m){panel.innerHTML="<h3>Profil bearbeiten</h3><p role='status'></p><form id='u-profile'><input name='display_name' maxlength='120' value='"+esc(m.display_name||"")+"' placeholder='Anzeigename'><textarea name='bio' maxlength='1000' placeholder='Über mich'>"+esc(m.bio||"")+"</textarea><input name='avatar_url' value='"+esc(m.avatar_url||"")+"' placeholder='HTTPS-Profilbild-URL'><button>Speichern</button><button type='button' class='secondary' id='u-cancel'>Abbrechen</button></form>";panel.querySelector("#u-cancel").onclick=render;panel.querySelector("#u-profile").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{await apiCall("/profile","PATCH",{display_name:f.get("display_name"),bio:f.get("bio"),avatar_url:f.get("avatar_url")});render()}catch(err){status(err.message)}}}
+
+ if(!window.__ultimaBillingFetchPatched){
+  window.__ultimaBillingFetchPatched=true;
+  const nativeFetch=window.fetch.bind(window);
+  const paidFeature=function(path){
+   const p=path.toLowerCase();
+   if(/\/(auth|login|register|profile|logout|payment|payments|credits|checkout|orders|upload|webhook|search|like|comment|message|settings)(\/|$)/.test(p))return null;
+   if(/image|img2img/.test(p))return "image_generation";
+   if(/video|clip/.test(p))return "video_generation";
+   if(/music|audio|song/.test(p))return "music_generation";
+   if(/game|dlc/.test(p))return "game_generation";
+   if(/mod/.test(p))return "mod_generation";
+   if(/chat|completion|generate|generation|\/ai(\/|$)/.test(p))return "ai_generation";
+   return null;
+  };
+  window.fetch=async function(input,init={}){
+   const rawUrl=typeof input==="string"?input:(input&&input.url)||String(input);
+   let parsed;try{parsed=new URL(rawUrl,location.href)}catch(e){return nativeFetch(input,init)}
+   if(parsed.origin===api||parsed.origin!==location.origin)return nativeFetch(input,init);
+   const method=String(init.method||(input&&input.method)||"GET").toUpperCase();
+   const feature=method==="POST"?paidFeature(parsed.pathname):null;
+   if(!feature)return nativeFetch(input,init);
+   if(!token()){render();throw new Error("Für diese Premium-Generierung bitte anmelden und Credits aufladen.");}
+   let balance;
+   try{balance=await apiCall("/credits/balance")}catch(e){throw new Error("Credit-Konto derzeit nicht erreichbar: "+e.message)}
+   const price=Number(balance.prices&&balance.prices[feature]||0);
+   if(!price||Number(balance.balance)<price){render();throw new Error("Nicht genügend Credits. Benötigt: "+price+" · Guthaben: "+Number(balance.balance||0));}
+   const response=await nativeFetch(input,init);
+   if(response.ok){
+    let failed=false;
+    try{const body=await response.clone().json();failed=!!(body&&body.error)}catch(e){}
+    if(!failed){
+     const requestId=(crypto&&crypto.randomUUID)?crypto.randomUUID():"gen-"+Date.now()+"-"+Math.random().toString(36).slice(2);
+     try{await apiCall("/credits/consume","POST",{feature:feature,request_id:requestId})}
+     catch(e){window.dispatchEvent(new CustomEvent("ultima:billing-error",{detail:{message:e.message,feature:feature}}));}
+    }
+   }
+   return response;
+  };
+ }
+
  window.UltimaMembership.chargeSuccessfulGeneration=async function(feature,requestId){return await apiCall("/credits/consume","POST",{feature:feature,request_id:requestId})};
  window.UltimaMembership.getCreditBalance=async function(){return await apiCall("/credits/balance")};
  btn.onclick=()=>{if(panel.hidden)render();else panel.hidden=true};document.addEventListener("keydown",e=>{if(e.key==="Escape")panel.hidden=true});
