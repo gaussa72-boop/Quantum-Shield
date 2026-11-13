@@ -875,7 +875,7 @@ def local_site_admin(slug):
 @app.get("/admin/api/overview")
 @admin_required
 def admin_overview():
-    sites = Site.query.filter(~Site.slug.in_(EXCLUDED_SITE_SLUGS)).order_by(Site.name).all()
+    sites = Site.query.order_by(Site.name).all()
     return jsonify(sites=[{"slug": s.slug, "name": s.name, "origin": s.origin, "members": Member.query.filter_by(site_id=s.id).count(), "active": s.is_active} for s in sites], total_members=sum(Member.query.filter_by(site_id=s.id).count() for s in sites))
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
@@ -921,6 +921,7 @@ with app.app_context():
                     registered.name = item["name"]
                     registered.origin = item["origin"]
                     registered.membership_enabled = item.get("membership_enabled", True)
+                    registered.is_active = item.get("is_active", registered.is_active)
         db.session.commit()
     # New sites start without an integration secret; an admin issues one explicitly.
     if PREMIUM_OWNER_EMAIL:
