@@ -19,6 +19,7 @@ Central membership and credit API for the non-Rothshild Render portfolio. Rothsh
 - A member submits the amount and 64-character Bitcoin transaction ID. The payment remains pending.
 - The central administrator must independently verify the transaction, destination, confirmations and USD-equivalent amount before approving it. Approval credits the member's balance once; duplicate TXIDs are rejected.
 - No automatic on-chain verification or live BTC/USD pricing is claimed in this version.
+- Real top-ups are deliberately disabled in Render with CRYPTO_TOPUPS_ENABLED=false while the test database is temporary. Do not accept real Bitcoin payments until a persistent production database and verification workflow are ready.
 
 ## Default per-generation prices
 - ai_generation: 1 credit
