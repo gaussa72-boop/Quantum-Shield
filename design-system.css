@@ -1,0 +1,56 @@
+/* ULTIMA Design System 2026 — progressive enhancement, brand-preserving */
+:root {
+  --ultima-accent: #8b7cff;
+  --ultima-accent-2: #55d6be;
+  --ultima-focus: #7dd3fc;
+  --ultima-surface: color-mix(in srgb, Canvas 92%, transparent);
+  --ultima-border: color-mix(in srgb, currentColor 14%, transparent);
+  --ultima-shadow: 0 18px 48px rgba(0,0,0,.12);
+  color-scheme: light dark;
+  scroll-behavior: smooth;
+}
+::selection { background: color-mix(in srgb, var(--ultima-accent) 35%, transparent); }
+:where(a,button,input,textarea,select,[role="button"],[tabindex]):focus-visible {
+  outline: 2px solid var(--ultima-focus);
+  outline-offset: 3px;
+}
+:where(button,[role="button"],input[type="submit"],input[type="button"]) {
+  transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+:where(button,[role="button"],input[type="submit"],input[type="button"]):hover {
+  filter: brightness(1.06);
+}
+:where(button,[role="button"],input[type="submit"],input[type="button"]):active {
+  transform: translateY(1px) scale(.99);
+}
+:where(input:not([type="checkbox"]):not([type="radio"]),textarea,select) {
+  accent-color: var(--ultima-accent);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+:where(input,textarea,select):focus {
+  border-color: color-mix(in srgb, var(--ultima-accent) 72%, currentColor) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ultima-accent) 18%, transparent);
+}
+:where(.card,.panel,.product-card,.feature-card,.stat-card,.glass-card,.dashboard-card) {
+  border-color: var(--ultima-border);
+  box-shadow: var(--ultima-shadow);
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+:where(.card,.panel,.product-card,.feature-card,.stat-card,.glass-card,.dashboard-card):hover {
+  border-color: color-mix(in srgb, var(--ultima-accent) 36%, var(--ultima-border));
+}
+:where(img,video,canvas,iframe) { max-width: 100%; }
+:where(img) { height: auto; }
+:where(nav a,.nav-link,.navbtn,.sidebar-link) { transition: color .18s ease, background-color .18s ease; }
+:where(table) { border-collapse: collapse; }
+:where(th,td) { overflow-wrap: anywhere; }
+@media (hover:hover) and (prefers-reduced-motion:no-preference) {
+  :where(.card,.product-card,.feature-card,.stat-card,.dashboard-card):hover { transform: translateY(-2px); }
+}
+@media (max-width: 700px) {
+  :where(button,[role="button"],input[type="submit"]) { min-height: 40px; }
+  :where(input,textarea,select) { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
