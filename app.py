@@ -54,6 +54,7 @@ class Site(db.Model):
     origin = db.Column(db.String(255), nullable=False)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     webhook_token = db.Column(db.String(96), nullable=True, unique=True)
+    membership_enabled = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     members = db.relationship("Member", backref="site", lazy=True, cascade="all, delete-orphan")
 
@@ -142,7 +143,7 @@ def audit(actor, action, site_slug=None, target=None):
 
 def site_for(slug):
     site = Site.query.filter_by(slug=slug, is_active=True).first()
-    if not site:
+    if not site or not site.membership_enabled:
         return None
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin and origin != site.origin.rstrip("/") and origin not in ALLOWED_ORIGINS:
@@ -649,6 +650,9 @@ SITE_READONLY_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><me
 with app.app_context():
     db.create_all()
     site_columns = {col["name"] for col in inspect(db.engine).get_columns("site")}
+    if "membership_enabled" not in site_columns:
+        db.session.execute(text("ALTER TABLE site ADD COLUMN membership_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
+        db.session.commit()
     if "webhook_token" not in site_columns:
         db.session.execute(text("ALTER TABLE site ADD COLUMN webhook_token VARCHAR(96)"))
         db.session.commit()
@@ -663,6 +667,6 @@ with app.app_context():
     if os.path.exists(registry_path):
         with open(registry_path, "r", encoding="utf-8") as registry_file:
             for item in json.load(registry_file):
-                if item["slug"] not in {"royal-palace-4r57", "business-real-estate-membership"} and not Site.query.filter_by(slug=item["slug"]).first():
-                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48)))
+                if not Site.query.filter_by(slug=item["slug"]).first():
+                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48), membership_enabled=item.get("membership_enabled", True)))
         db.session.commit()
