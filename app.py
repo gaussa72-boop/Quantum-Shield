@@ -953,3 +953,98 @@ with app.app_context():
     if ADMIN_OWNER_EMAIL:
         Member.query.filter(func.lower(Member.email) == ADMIN_OWNER_EMAIL).update({"role": "superadmin", "is_lifetime_premium": True}, synchronize_session=False)
     db.session.commit()
+
+
+# ---------------------------------------------------------------------------
+# CYBER SHIELD: central security posture dashboard for registered websites.
+# This performs safe, read-only HTTPS/header checks; it is not a WAF or
+# vulnerability penetration test. New Site records are included automatically.
+# ---------------------------------------------------------------------------
+@app.after_request
+def cyber_shield_response_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.is_secure or app.config.get("SESSION_COOKIE_SECURE"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+CYBER_SHIELD_HTML = """<!doctype html>
+<html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cyber Shield · ULTIMA</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#070b14;color:#edf4ff;font:15px Inter,system-ui,sans-serif}
+header{padding:22px clamp(18px,5vw,64px);border-bottom:1px solid #263650;display:flex;justify-content:space-between;gap:14px;align-items:center}
+main{max-width:1200px;margin:30px auto;padding:0 18px}.muted{color:#9eafc9}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+.card{background:linear-gradient(145deg,#111d30,#0c1423);border:1px solid #263c59;border-radius:16px;padding:18px;margin:14px 0}
+.stat{font-size:30px;font-weight:800}.pill{display:inline-block;padding:5px 9px;border-radius:99px;background:#263650}
+.ok{color:#72e3b1}.warn{color:#ffd17b}.bad{color:#ff9292}button,a{color:#dffaff}button{background:#164b62;border:1px solid #2e8297;padding:12px 16px;border-radius:10px;font-weight:700;cursor:pointer}
+a{color:#83ddeb}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:11px;border-bottom:1px solid #263650;vertical-align:top}
+code{overflow-wrap:anywhere}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+</style><header><b>◈ ULTIMA / CYBER SHIELD</b><a href="/admin">← Control Center</a></header>
+<main><div class="top"><div><h1>Cyber Shield</h1><p class="muted">Zentrale Sicherheitsübersicht · Inhaber {{owner}}</p></div>
+<form method="post" action="/cyber-shield/scan"><input type="hidden" name="csrf" value="{{csrf}}"><button>Jetzt alle Webseiten prüfen</button></form></div>
+<div class="grid"><section class="card"><small class="muted">REGISTRIERTE WEBSITES</small><div class="stat">{{total}}</div></section>
+<section class="card"><small class="muted">LETZTER SCAN · ERREICHBAR</small><div class="stat ok">{{healthy}}</div></section>
+<section class="card"><small class="muted">WARNUNGEN</small><div class="stat warn">{{warnings}}</div></section>
+<section class="card"><small class="muted">PRÜFMODUS</small><div class="stat">READ-ONLY</div></section></div>
+<section class="card"><h2>Website-Sicherheitsstatus</h2><p class="muted">Prüft HTTPS-Erreichbarkeit und wichtige HTTP-Sicherheitsheader. Websites werden aus der zentralen Site-Registry geladen – neu hinzugefügte Sites erscheinen automatisch.</p>
+<table><thead><tr><th>Website</th><th>HTTPS / HTTP</th><th>Security Header</th><th>Bewertung</th><th>Hinweise</th></tr></thead><tbody>
+{% for row in rows %}<tr><td><b>{{row.name}}</b><br><small class="muted">{{row.slug}}</small></td>
+<td>{% if row.http %}<span class="ok">{{row.http}}</span>{% else %}<span class="bad">Nicht erreichbar</span>{% endif %}</td>
+<td>{{row.present }}/{{row.total }}</td><td>{% if row.score >= 80 %}<span class="ok">{{row.score}} / 100</span>{% elif row.score >= 50 %}<span class="warn">{{row.score}} / 100</span>{% else %}<span class="bad">{{row.score}} / 100</span>{% endif %}</td>
+<td>{{row.notes|join(", ") if row.notes else "Keine Header-Warnung aus diesem Check"}}</td></tr>
+{% else %}<tr><td colspan="5">Noch kein Scan ausgeführt. Starte oben die Prüfung.</td></tr>{% endfor %}</tbody></table></section>
+<section class="card"><h2>Schutzumfang & Grenzen</h2><ul><li>Automatischer Inventar-Abgleich mit allen in ULTIMA registrierten Websites.</li><li>HTTPS-Verbindung, TLS-Zertifikatsprüfung durch den Standard-HTTPS-Client und Security-Header-Check.</li><li>Zentrale Sicherheitsübersicht und Audit-geschützte Scan-Auslösung.</li><li>Diese Prüfung installiert keinen Agenten, keine Firewall und keinen WAF auf den Ziel-Websites.</li><li>Für aktiven Schutz müssen zusätzlich Hosting-/DNS-Firewalls, Rate Limits, sichere Secrets, Updates, Backups und Monitoring je Dienst konfiguriert werden.</li></ul></section>
+<p class="muted">Letzter Scan: {{scanned_at or "Noch nicht ausgeführt"}} · Nur registrierte HTTPS-Hosts auf *.onrender.com werden abgefragt.</p></main></html>"""
+
+@app.get("/cyber-shield")
+@admin_required
+def cyber_shield_home():
+    rows = session.get("cyber_shield_last_scan", [])
+    return render_template_string(CYBER_SHIELD_HTML, owner=ADMIN_OWNER_EMAIL, csrf=session["csrf"],
+        total=Site.query.filter_by(is_active=True).count(),
+        healthy=sum(1 for x in rows if x.get("http")),
+        warnings=sum(1 for x in rows if not x.get("http") or x.get("score", 0) < 80),
+        rows=rows, scanned_at=session.get("cyber_shield_scanned_at"))
+
+@app.post("/cyber-shield/scan")
+@admin_required
+@limiter.limit("3 per hour")
+def cyber_shield_scan():
+    if not admin_csrf_ok():
+        abort(400)
+    sites = Site.query.filter_by(is_active=True).order_by(Site.name).all()
+    required_headers = {
+        "Strict-Transport-Security": "HSTS fehlt",
+        "Content-Security-Policy": "CSP fehlt",
+        "X-Content-Type-Options": "X-Content-Type-Options fehlt",
+        "Referrer-Policy": "Referrer-Policy fehlt",
+        "Permissions-Policy": "Permissions-Policy fehlt",
+    }
+    class NoRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    opener = __import__("urllib.request", fromlist=["build_opener"]).build_opener(NoRedirect)
+    def check(site):
+        parsed = urlparse(site.origin)
+        if parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".onrender.com") or parsed.username or parsed.password:
+            return {"name": site.name, "slug": site.slug, "http": None, "present": 0, "total": len(required_headers), "score": 0, "notes": ["Host nicht in der erlaubten HTTPS-Render-Domain"] }
+        try:
+            req = Request(site.origin.rstrip("/") + "/health", headers={"User-Agent": "ULTIMA-Cyber-Shield/1.0"}, method="GET")
+            with opener.open(req, timeout=7) as response:
+                headers = response.headers
+                status = response.status
+            present = sum(1 for key in required_headers if headers.get(key))
+            missing = [label for key, label in required_headers.items() if not headers.get(key)]
+            score = round((present / len(required_headers)) * 80 + (20 if 200 <= status < 400 else 0))
+            return {"name": site.name, "slug": site.slug, "http": status, "present": present, "total": len(required_headers), "score": score, "notes": missing}
+        except Exception as exc:
+            return {"name": site.name, "slug": site.slug, "http": None, "present": 0, "total": len(required_headers), "score": 0, "notes": ["HTTPS-/Health-Check fehlgeschlagen: " + type(exc).__name__]}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(check, sites))
+    session["cyber_shield_last_scan"] = rows
+    session["cyber_shield_scanned_at"] = datetime.now(timezone.utc).isoformat()
+    audit("admin:" + session.get("admin_email", ADMIN_OWNER_EMAIL), "cyber_shield.scan", None, json.dumps({"sites": len(rows), "warnings": sum(1 for x in rows if not x["http"] or x["score"] < 80)}))
+    return redirect(url_for("cyber_shield_home"))
