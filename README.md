@@ -15,7 +15,7 @@ Central membership and credit API for the non-Rothshild Render portfolio. Rothsh
 - Each member has a separate credit balance per website.
 - 1 credit = 1 USD. Minimum top-up: 5 USD, whole-dollar increments.
 - Bitcoin network: Bitcoin mainnet.
-- Receiving wallet: bc1qs0quxgqq26kawsq8al0kcxx3690jnp3a3zflce
+- Receiving wallet: configured only through Render environment variable BTC_RECEIVE_ADDRESS; no address is hardcoded.
 - A member submits the amount and 64-character Bitcoin transaction ID. The payment remains pending.
 - The central administrator must independently verify the transaction, destination, confirmations and USD-equivalent amount before approving it. Approval credits the member's balance once; duplicate TXIDs are rejected.
 - No automatic on-chain verification or live BTC/USD pricing is claimed in this version.
