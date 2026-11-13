@@ -40,6 +40,8 @@ limiter = Limiter(get_remote_address, app=app, default_limits=["300 per hour"], 
 serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-membership-v1")
 ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()}
 SETUP_TOKEN = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
+ADMIN_OWNER_EMAIL = os.getenv("ADMIN_OWNER_EMAIL", "").strip().lower()
+PREMIUM_OWNER_EMAIL = os.getenv("PREMIUM_OWNER_EMAIL", "").strip().lower()
 BTC_ADDRESS = os.getenv("BTC_RECEIVE_ADDRESS", "").strip()
 BTC_NETWORK = "Bitcoin mainnet"
 CRYPTO_TOPUPS_ENABLED = os.getenv("CRYPTO_TOPUPS_ENABLED", "false").lower() == "true"
@@ -75,6 +77,7 @@ class Member(db.Model):
     status = db.Column(db.String(24), default="active", nullable=False)
     token_version = db.Column(db.Integer, default=0, nullable=False)
     credit_balance = db.Column(db.Integer, default=0, nullable=False)
+    is_lifetime_premium = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint("site_id", "email", name="uq_member_site_email"), UniqueConstraint("site_id", "username", name="uq_member_site_username"))
 
@@ -105,6 +108,7 @@ class CreditLedger(db.Model):
 
 class StoreOrder(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    site = db.relationship("Site")
     site_id = db.Column(db.Integer, db.ForeignKey("site.id"), nullable=False, index=True)
     external_order_id = db.Column(db.String(128), nullable=False)
     order_number = db.Column(db.String(128), nullable=False)
@@ -239,11 +243,11 @@ def register(slug):
         return jsonify(error="Für diese Webseite existiert bereits ein Konto mit dieser E-Mail."), 409
     if Member.query.filter_by(site_id=site.id, username=username).first():
         return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
-    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120])
+    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
     db.session.add(member)
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
-    return jsonify(ok=True, token=issue_token(member), member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role}), 201
+    return jsonify(ok=True, token=issue_token(member), member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "is_lifetime_premium": member.is_lifetime_premium}), 201
 
 @app.post("/api/<slug>/login")
 @limiter.limit("10 per 15 minutes")
@@ -259,7 +263,7 @@ def login(slug):
         member = Member.query.filter_by(site_id=site.id, username=identity).first()
     if not member or member.status != "active" or not check_password_hash(member.password_hash, password):
         return jsonify(error="Anmeldedaten ungültig oder Konto nicht aktiv."), 401
-    return jsonify(ok=True, token=issue_token(member), member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role})
+    return jsonify(ok=True, token=issue_token(member), member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "is_lifetime_premium": member.is_lifetime_premium})
 
 @app.get("/api/<slug>/me")
 def me(slug):
@@ -268,7 +272,7 @@ def me(slug):
         return jsonify(error="Webseite nicht gefunden."), 404
     if not member:
         return jsonify(error="Anmeldung erforderlich."), 401
-    return jsonify(member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "bio": member.bio, "avatar_url": member.avatar_url, "role": member.role, "created_at": member.created_at.isoformat()})
+    return jsonify(member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "bio": member.bio, "avatar_url": member.avatar_url, "role": member.role, "created_at": member.created_at.isoformat(), "is_lifetime_premium": member.is_lifetime_premium})
 
 @app.patch("/api/<slug>/profile")
 def update_profile(slug):
@@ -490,6 +494,8 @@ def setup_admin():
     if not SETUP_TOKEN or not secrets.compare_digest(str(data.get("setup_token", "")), SETUP_TOKEN):
         return jsonify(error="Setup-Token ungültig."), 403
     email = str(data.get("email", "")).strip().lower()
+    if not ADMIN_OWNER_EMAIL or email != ADMIN_OWNER_EMAIL:
+        return jsonify(error="Die Ersteinrichtung ist ausschließlich für die freigegebene Inhaber-E-Mail erlaubt."), 403
     password = str(data.get("password", ""))
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(password) < 14:
         return jsonify(error="Gültige E-Mail und Passwort mit mindestens 14 Zeichen erforderlich."), 400
@@ -646,8 +652,12 @@ with app.app_context():
     if "webhook_token" not in site_columns:
         db.session.execute(text("ALTER TABLE site ADD COLUMN webhook_token VARCHAR(96)"))
         db.session.commit()
-    if "credit_balance" not in {col["name"] for col in inspect(db.engine).get_columns("member")}:
+    member_columns = {col["name"] for col in inspect(db.engine).get_columns("member")}
+    if "credit_balance" not in member_columns:
         db.session.execute(text("ALTER TABLE member ADD COLUMN credit_balance INTEGER NOT NULL DEFAULT 0"))
+        db.session.commit()
+    if "is_lifetime_premium" not in member_columns:
+        db.session.execute(text("ALTER TABLE member ADD COLUMN is_lifetime_premium BOOLEAN NOT NULL DEFAULT FALSE"))
         db.session.commit()
     registry_path = os.path.join(os.path.dirname(__file__), "sites.json")
     if os.path.exists(registry_path):
