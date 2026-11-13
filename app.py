@@ -544,9 +544,40 @@ def admin_login():
 @limiter.limit("5 per 15 minutes")
 def admin_login_post():
     data = request.form
-    admin = Admin.query.filter(func.lower(Admin.email) == data.get("email", "").strip().lower()).first()
-    if not admin or not check_password_hash(admin.password_hash, data.get("password", "")):
-        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig."), 401
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+
+    # Owner SSO: accept the same credentials used on either Rothshild property.
+    # Only the configured owner email with a verified superadmin member account
+    # can bootstrap/update the central Admin record.
+    admin = Admin.query.filter(func.lower(Admin.email) == email).first()
+    if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL:
+        owner_members = (
+            Member.query.join(Site, Member.site_id == Site.id)
+            .filter(
+                Site.slug.in_(("royal-palace-4r57", "business-real-estate-membership")),
+                func.lower(Member.email) == email,
+                Member.status == "active",
+                Member.role == "superadmin",
+            ).all()
+        )
+        verified_owner = next(
+            (member for member in owner_members if check_password_hash(member.password_hash, password)),
+            None,
+        )
+        if verified_owner:
+            if not admin:
+                admin = Admin(email=email, password_hash=verified_owner.password_hash, role="superadmin")
+                db.session.add(admin)
+            else:
+                admin.password_hash = verified_owner.password_hash
+                admin.role = "superadmin"
+            db.session.commit()
+
+    # Keep explicitly-created central administrators working as before.
+    if not admin or not check_password_hash(admin.password_hash, password):
+        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein aktives Rothshild-Inhaberkonto oder ein eingerichtetes ULTIMA-Admin-Konto."), 401
+
     session.clear()
     session["admin_id"] = admin.id
     session["admin_email"] = admin.email
