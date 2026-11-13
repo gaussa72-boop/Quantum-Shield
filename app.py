@@ -797,7 +797,7 @@ def admin_create_site():
         abort(400)
     if Site.query.filter_by(slug=slug).first():
         abort(409)
-    db.session.add(Site(name=name, slug=slug, origin=origin, webhook_token_hash=hashlib.sha256(secrets.token_urlsafe(48).encode("utf-8")).hexdigest()))
+    db.session.add(Site(name=name, slug=slug, origin=origin))
     db.session.commit()
     audit("admin", "site.created", slug, origin)
     return redirect(url_for("admin_home"))
@@ -927,14 +927,13 @@ with app.app_context():
             for item in json.load(registry_file):
                 registered = Site.query.filter_by(slug=item["slug"]).first()
                 if not registered:
-                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48), membership_enabled=item.get("membership_enabled", True)))
+                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], membership_enabled=item.get("membership_enabled", True)))
                 else:
                     registered.name = item["name"]
                     registered.origin = item["origin"]
                     registered.membership_enabled = item.get("membership_enabled", True)
         db.session.commit()
-    for registered_site in Site.query.filter_by(webhook_token=None).all():
-        registered_site.webhook_token_hash = hashlib.sha256(secrets.token_urlsafe(48).encode("utf-8")).hexdigest()
+    # New sites start without an integration secret; an admin issues one explicitly.
     if PREMIUM_OWNER_EMAIL:
         Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update({"is_lifetime_premium": True}, synchronize_session=False)
     if ADMIN_OWNER_EMAIL:
