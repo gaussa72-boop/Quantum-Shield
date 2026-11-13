@@ -26,6 +26,8 @@ services:
         value: memory://
       - key: BTC_RECEIVE_ADDRESS
         sync: false
+      - key: CRYPTO_TOPUPS_ENABLED
+        value: "false"
 
 databases:
   - name: ultima-membership-core
