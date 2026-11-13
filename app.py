@@ -45,6 +45,7 @@ serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-membe
 ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()}
 SETUP_TOKEN = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
 ADMIN_OWNER_EMAIL = os.getenv("ADMIN_OWNER_EMAIL", "").strip().lower()
+EXCLUDED_SITE_SLUGS = frozenset({"royal-palace-4r57", "business-real-estate-membership"})
 PREMIUM_OWNER_EMAIL = os.getenv("PREMIUM_OWNER_EMAIL", "").strip().lower()
 BTC_ADDRESS = os.getenv("BTC_RECEIVE_ADDRESS", "").strip()
 BTC_NETWORK = "Bitcoin mainnet"
@@ -164,6 +165,8 @@ def audit(actor, action, site_slug=None, target=None):
     db.session.commit()
 
 def site_for(slug):
+    if slug in EXCLUDED_SITE_SLUGS:
+        return None
     site = Site.query.filter_by(slug=slug, is_active=True).first()
     if not site or not site.membership_enabled:
         return None
@@ -683,34 +686,9 @@ def admin_login_post():
     if not ADMIN_OWNER_EMAIL or email != ADMIN_OWNER_EMAIL:
         return render_template_string(LOGIN_HTML, error="Dieses Konto ist nicht als alleiniger ULTIMA-Inhaber freigegeben."), 401
 
-    # Owner SSO: accept the same credentials used on either Rothshild property.
-    # Only the configured owner email with a verified superadmin member account
-    # can bootstrap/update the central Admin record.
+    # Central ULTIMA login is independent of every excluded property.
     admin = Admin.query.filter(func.lower(Admin.email) == email).first()
-    if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL:
-        owner_members = (
-            Member.query.join(Site, Member.site_id == Site.id)
-            .filter(
-                Site.slug.in_(("royal-palace-4r57", "business-real-estate-membership")),
-                func.lower(Member.email) == email,
-                Member.status == "active",
-                Member.role == "superadmin",
-            ).all()
-        )
-        verified_owner = next(
-            (member for member in owner_members if check_password_hash(member.password_hash, password)),
-            None,
-        )
-        if verified_owner:
-            if not admin:
-                admin = Admin(email=email, password_hash=verified_owner.password_hash, role="superadmin")
-                db.session.add(admin)
-            else:
-                admin.password_hash = verified_owner.password_hash
-                admin.role = "superadmin"
-            db.session.commit()
 
-    # Keep explicitly-created central administrators working as before.
     if not admin or not check_password_hash(admin.password_hash, password):
         return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein aktives Rothshild-Inhaberkonto oder ein eingerichtetes ULTIMA-Admin-Konto."), 401
 
@@ -737,7 +715,7 @@ def admin_logout():
 @app.get("/admin")
 @admin_required
 def admin_home():
-    sites = Site.query.order_by(Site.name).all()
+    sites = Site.query.filter(~Site.slug.in_(EXCLUDED_SITE_SLUGS)).order_by(Site.name).all()
     site_data = []
     for site in sites:
         site_data.append({"site": site, "count": Member.query.filter_by(site_id=site.id).count(), "admins": Member.query.filter_by(site_id=site.id, role="site_admin").count(), "orders": StoreOrder.query.filter_by(site_id=site.id).count()})
@@ -900,8 +878,8 @@ def local_site_admin(slug):
 @app.get("/admin/api/overview")
 @admin_required
 def admin_overview():
-    sites = Site.query.order_by(Site.name).all()
-    return jsonify(sites=[{"slug": s.slug, "name": s.name, "origin": s.origin, "members": Member.query.filter_by(site_id=s.id).count(), "active": s.is_active} for s in sites], total_members=Member.query.count())
+    sites = Site.query.filter(~Site.slug.in_(EXCLUDED_SITE_SLUGS)).order_by(Site.name).all()
+    return jsonify(sites=[{"slug": s.slug, "name": s.name, "origin": s.origin, "members": Member.query.filter_by(site_id=s.id).count(), "active": s.is_active} for s in sites], total_members=sum(Member.query.filter_by(site_id=s.id).count() for s in sites))
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
@@ -947,6 +925,9 @@ with app.app_context():
                     registered.origin = item["origin"]
                     registered.membership_enabled = item.get("membership_enabled", True)
         db.session.commit()
+    # Rothshild services are deliberately outside this central ULTIMA portfolio.
+    Site.query.filter(Site.slug.in_(EXCLUDED_SITE_SLUGS)).update({"is_active": False, "membership_enabled": False}, synchronize_session=False)
+    db.session.commit()
     # New sites start without an integration secret; an admin issues one explicitly.
     if PREMIUM_OWNER_EMAIL:
         Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update({"is_lifetime_premium": True}, synchronize_session=False)
