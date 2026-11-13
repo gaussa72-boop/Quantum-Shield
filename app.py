@@ -78,6 +78,7 @@ class Member(db.Model):
 
 class CryptoPayment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    site = db.relationship("Site")
     site_id = db.Column(db.Integer, db.ForeignKey("site.id"), nullable=False, index=True)
     member_id = db.Column(db.Integer, db.ForeignKey("member.id"), nullable=False, index=True)
     amount_usd = db.Column(db.Numeric(12, 2), nullable=False)
