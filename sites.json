@@ -170,5 +170,11 @@
     "name": "Rothshild · Business Real Estate",
     "origin": "https://business-real-estate-membership-wswk.onrender.com",
     "is_active": true
+  },
+  {
+    "slug": "lichtkrieger",
+    "name": "LICHTKRIEGER Cloud Gaming",
+    "origin": "https://lichtkrieger-cloud-gaming.onrender.com",
+    "is_active": true
   }
 ]
