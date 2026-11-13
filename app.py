@@ -45,7 +45,6 @@ serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-membe
 ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()}
 SETUP_TOKEN = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
 ADMIN_OWNER_EMAIL = os.getenv("ADMIN_OWNER_EMAIL", "").strip().lower()
-EXCLUDED_SITE_SLUGS = frozenset({"royal-palace-4r57", "business-real-estate-membership"})
 PREMIUM_OWNER_EMAIL = os.getenv("PREMIUM_OWNER_EMAIL", "").strip().lower()
 BTC_ADDRESS = os.getenv("BTC_RECEIVE_ADDRESS", "").strip()
 BTC_NETWORK = "Bitcoin mainnet"
@@ -165,8 +164,6 @@ def audit(actor, action, site_slug=None, target=None):
     db.session.commit()
 
 def site_for(slug):
-    if slug in EXCLUDED_SITE_SLUGS:
-        return None
     site = Site.query.filter_by(slug=slug, is_active=True).first()
     if not site or not site.membership_enabled:
         return None
@@ -715,7 +712,7 @@ def admin_logout():
 @app.get("/admin")
 @admin_required
 def admin_home():
-    sites = Site.query.filter(~Site.slug.in_(EXCLUDED_SITE_SLUGS)).order_by(Site.name).all()
+    sites = Site.query.order_by(Site.name).all()
     site_data = []
     for site in sites:
         site_data.append({"site": site, "count": Member.query.filter_by(site_id=site.id).count(), "admins": Member.query.filter_by(site_id=site.id, role="site_admin").count(), "orders": StoreOrder.query.filter_by(site_id=site.id).count()})
@@ -925,9 +922,6 @@ with app.app_context():
                     registered.origin = item["origin"]
                     registered.membership_enabled = item.get("membership_enabled", True)
         db.session.commit()
-    # Rothshild services are deliberately outside this central ULTIMA portfolio.
-    Site.query.filter(Site.slug.in_(EXCLUDED_SITE_SLUGS)).update({"is_active": False, "membership_enabled": False}, synchronize_session=False)
-    db.session.commit()
     # New sites start without an integration secret; an admin issues one explicitly.
     if PREMIUM_OWNER_EMAIL:
         Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update({"is_lifetime_premium": True}, synchronize_session=False)
