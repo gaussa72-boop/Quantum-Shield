@@ -258,11 +258,12 @@ def register(slug):
         return jsonify(error="Für diese Webseite existiert bereits ein Konto mit dieser E-Mail."), 409
     if Member.query.filter_by(site_id=site.id, username=username).first():
         return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
-    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL else "member", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
+    is_owner = bool(ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL)
+    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if is_owner else "member", status="active" if is_owner else "pending", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
     db.session.add(member)
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
-    return jsonify(ok=True, token=issue_token(member), member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "is_lifetime_premium": member.is_lifetime_premium}), 201
+    return jsonify(ok=True, approval_required=not is_owner, status=member.status, message="Registrierung eingegangen. Dein Konto wird nach Freigabe durch die Webseiten-Administration aktiviert." if not is_owner else "Inhaber-Konto angelegt.", token=issue_token(member) if is_owner else None, member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "status": member.status, "is_lifetime_premium": member.is_lifetime_premium}), 201
 
 @app.post("/api/<slug>/login")
 @limiter.limit("10 per 15 minutes")
@@ -740,7 +741,9 @@ def local_admin_member_action(slug, member_id):
         return jsonify(error="Mitglied nicht gefunden."), 404
     data = request.get_json(silent=True) or {}
     action = data.get("action")
-    if action == "disable":
+    if action == "approve" and target.status == "pending":
+        target.status = "active"
+    elif action == "disable":
         target.status = "disabled"
         target.token_version += 1
     elif action == "enable":
