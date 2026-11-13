@@ -51,7 +51,7 @@ function init(opts={}){
   window.fetch=async function(input,init={}){
    const rawUrl=typeof input==="string"?input:(input&&input.url)||String(input);
    let parsed;try{parsed=new URL(rawUrl,location.href)}catch(e){return nativeFetch(input,init)}
-   if(parsed.origin===api||parsed.origin!==location.origin)return nativeFetch(input,init);
+   if(parsed.origin===api)return nativeFetch(input,init);
    const method=String(init.method||(input&&input.method)||"GET").toUpperCase();
    const feature=method==="POST"?paidFeature(parsed.pathname):null;
    if(!feature)return nativeFetch(input,init);
