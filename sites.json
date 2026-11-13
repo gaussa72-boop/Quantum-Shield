@@ -163,12 +163,12 @@
     "slug": "royal-palace-4r57",
     "name": "Royal Palace Estates",
     "origin": "https://royal-palace-4r57.onrender.com",
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "business-real-estate-membership",
     "name": "Business Real Estate Membership",
     "origin": "https://business-real-estate-membership-wswk.onrender.com",
-    "membership_enabled": false
+    "membership_enabled": true
   }
 ]
