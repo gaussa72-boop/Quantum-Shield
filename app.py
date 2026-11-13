@@ -45,6 +45,12 @@ PREMIUM_OWNER_EMAIL = os.getenv("PREMIUM_OWNER_EMAIL", "").strip().lower()
 BTC_ADDRESS = os.getenv("BTC_RECEIVE_ADDRESS", "").strip()
 BTC_NETWORK = "Bitcoin mainnet"
 CRYPTO_TOPUPS_ENABLED = os.getenv("CRYPTO_TOPUPS_ENABLED", "false").lower() == "true"
+AI_MODE = os.getenv("ULTIMA_AI_MODE", "multi").strip().lower()
+PUBLISH_MODE = os.getenv("ULTIMA_PUBLISH_MODE", "approval").strip().lower()
+if AI_MODE not in {"multi", "single", "off"}:
+    AI_MODE = "multi"
+if PUBLISH_MODE not in {"approval", "manual", "disabled"}:
+    PUBLISH_MODE = "approval"
 GENERATION_PRICES = {"ai_generation": 1, "image_generation": 2, "video_generation": 5, "music_generation": 3, "game_generation": 25, "dlc_generation": 15, "mod_generation": 10}
 
 class Site(db.Model):
@@ -216,7 +222,7 @@ def membership_widget():
 def health():
     try:
         db.session.execute(db.text("SELECT 1"))
-        return jsonify(status="ok", service="ultima-membership-core", database="connected")
+        return jsonify(status="ok", service="ultima-membership-core", database="connected", ai_mode=AI_MODE, publish_mode=PUBLISH_MODE, publishing_requires_approval=(PUBLISH_MODE == "approval"))
     except Exception:
         app.logger.exception("Health check failed")
         return jsonify(status="degraded", database="unavailable"), 503
