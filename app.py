@@ -955,6 +955,15 @@ with app.app_context():
     db.session.commit()
 
 
+class CyberShieldScan(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    rows_json = db.Column(db.Text, nullable=False)
+    scanned_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_by = db.Column(db.String(255), nullable=False)
+
+with app.app_context():
+    db.create_all()
+
 # ---------------------------------------------------------------------------
 # CYBER SHIELD: central security posture dashboard for registered websites.
 # This performs safe, read-only HTTPS/header checks; it is not a WAF or
@@ -1002,12 +1011,13 @@ code{overflow-wrap:anywhere}.top{display:flex;justify-content:space-between;alig
 @app.get("/cyber-shield")
 @admin_required
 def cyber_shield_home():
-    rows = session.get("cyber_shield_last_scan", [])
+    latest = CyberShieldScan.query.order_by(CyberShieldScan.scanned_at.desc()).first()
+    rows = json.loads(latest.rows_json) if latest else []
     return render_template_string(CYBER_SHIELD_HTML, owner=ADMIN_OWNER_EMAIL, csrf=session["csrf"],
         total=Site.query.filter_by(is_active=True).count(),
         healthy=sum(1 for x in rows if x.get("http")),
         warnings=sum(1 for x in rows if not x.get("http") or x.get("score", 0) < 80),
-        rows=rows, scanned_at=session.get("cyber_shield_scanned_at"))
+        rows=rows, scanned_at=latest.scanned_at.isoformat() if latest else None)
 
 @app.post("/cyber-shield/scan")
 @admin_required
@@ -1044,7 +1054,7 @@ def cyber_shield_scan():
             return {"name": site.name, "slug": site.slug, "http": None, "present": 0, "total": len(required_headers), "score": 0, "notes": ["HTTPS-/Health-Check fehlgeschlagen: " + type(exc).__name__]}
     with ThreadPoolExecutor(max_workers=8) as pool:
         rows = list(pool.map(check, sites))
-    session["cyber_shield_last_scan"] = rows
-    session["cyber_shield_scanned_at"] = datetime.now(timezone.utc).isoformat()
+    db.session.add(CyberShieldScan(rows_json=json.dumps(rows, ensure_ascii=False), created_by=session.get("admin_email", ADMIN_OWNER_EMAIL)))
+    db.session.commit()
     audit("admin:" + session.get("admin_email", ADMIN_OWNER_EMAIL), "cyber_shield.scan", None, json.dumps({"sites": len(rows), "warnings": sum(1 for x in rows if not x["http"] or x["score"] < 80)}))
     return redirect(url_for("cyber_shield_home"))
