@@ -51,6 +51,7 @@ class Site(db.Model):
     name = db.Column(db.String(120), nullable=False)
     origin = db.Column(db.String(255), nullable=False)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    webhook_token = db.Column(db.String(96), nullable=True, unique=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     members = db.relationship("Member", backref="site", lazy=True, cascade="all, delete-orphan")
 
@@ -101,6 +102,26 @@ class CreditLedger(db.Model):
     reference = db.Column(db.String(128), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint("site_id", "member_id", "reference", name="uq_credit_ledger_reference"),)
+
+class StoreOrder(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site_id = db.Column(db.Integer, db.ForeignKey("site.id"), nullable=False, index=True)
+    external_order_id = db.Column(db.String(128), nullable=False)
+    order_number = db.Column(db.String(128), nullable=False)
+    customer_name = db.Column(db.String(255), default="", nullable=False)
+    customer_email = db.Column(db.String(255), default="", nullable=False)
+    currency = db.Column(db.String(8), default="EUR", nullable=False)
+    total_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    payment_status = db.Column(db.String(32), default="unknown", nullable=False)
+    fulfillment_status = db.Column(db.String(32), default="new", nullable=False)
+    invoice_number = db.Column(db.String(128), default="", nullable=False)
+    invoice_url = db.Column(db.String(1000), default="", nullable=False)
+    items_json = db.Column(db.JSON, default=list, nullable=False)
+    shipping_json = db.Column(db.JSON, default=dict, nullable=False)
+    source = db.Column(db.String(32), default="store", nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    __table_args__ = (UniqueConstraint("site_id", "external_order_id", name="uq_store_order_external"),)
 
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -370,6 +391,90 @@ def admin_payment_review(payment_id, action):
     audit("admin", "payment." + action, payment.site.slug, str(payment.id))
     return redirect(url_for("admin_home"))
 
+@app.post("/api/integrations/<slug>/orders")
+@limiter.limit("120 per hour")
+def ingest_store_order(slug):
+    site = Site.query.filter_by(slug=slug, is_active=True).first()
+    supplied = request.headers.get("X-ULTIMA-ORDER-TOKEN", "")
+    if not site or not site.webhook_token or not secrets.compare_digest(site.webhook_token, supplied):
+        return jsonify(error="Integration nicht autorisiert."), 401
+    data = request.get_json(silent=True) or {}
+    external_id = str(data.get("external_order_id", "")).strip()[:128]
+    order_number = str(data.get("order_number", external_id)).strip()[:128]
+    if not external_id or not order_number:
+        return jsonify(error="Bestell-ID und Bestellnummer sind erforderlich."), 400
+    try:
+        total = Decimal(str(data.get("total_amount", "0"))).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return jsonify(error="Ungültiger Bestellbetrag."), 400
+    if not total.is_finite() or total < 0 or total > Decimal("10000000"):
+        return jsonify(error="Ungültiger Bestellbetrag."), 400
+    items = data.get("items", [])
+    if not isinstance(items, list) or len(items) > 200:
+        return jsonify(error="Ungültige Bestellpositionen."), 400
+    safe_items = []
+    for item in items:
+        if isinstance(item, dict):
+            safe_items.append({k: str(item.get(k, ""))[:300] for k in ("name", "sku", "variant", "quantity", "unit_price", "total")})
+    order = StoreOrder.query.filter_by(site_id=site.id, external_order_id=external_id).first()
+    if not order:
+        order = StoreOrder(site_id=site.id, external_order_id=external_id, order_number=order_number, total_amount=total)
+        db.session.add(order)
+    order.order_number = order_number
+    order.customer_name = str(data.get("customer_name", ""))[:255]
+    order.customer_email = str(data.get("customer_email", ""))[:255]
+    order.currency = str(data.get("currency", "EUR"))[:8].upper()
+    order.total_amount = total
+    order.payment_status = str(data.get("payment_status", "unknown"))[:32]
+    order.fulfillment_status = str(data.get("fulfillment_status", "new"))[:32]
+    order.invoice_number = str(data.get("invoice_number", ""))[:128]
+    invoice_url = str(data.get("invoice_url", ""))
+    order.invoice_url = invoice_url[:1000] if invoice_url.startswith("https://") else ""
+    order.items_json = safe_items
+    order.shipping_json = data.get("shipping", {}) if isinstance(data.get("shipping"), dict) else {}
+    order.source = str(data.get("source", "store"))[:32]
+    db.session.commit()
+    audit("store-webhook", "order.synced", site.slug, order.order_number)
+    return jsonify(ok=True, order_id=order.id, order_number=order.order_number), 201
+
+@app.post("/admin/site/<slug>/integration-token")
+@admin_required
+def rotate_site_token(slug):
+    if not admin_csrf_ok():
+        abort(400)
+    site = Site.query.filter_by(slug=slug).first_or_404()
+    site.webhook_token = secrets.token_urlsafe(48)
+    db.session.commit()
+    audit(session.get("admin_email", "admin"), "site.integration_token_rotated", slug)
+    return redirect(url_for("admin_site", slug=slug))
+
+@app.post("/admin/order/<int:order_id>/update")
+@admin_required
+def update_store_order(order_id):
+    if not admin_csrf_ok():
+        abort(400)
+    order = db.session.get(StoreOrder, order_id)
+    if not order:
+        abort(404)
+    payment = request.form.get("payment_status", order.payment_status)[:32]
+    fulfillment = request.form.get("fulfillment_status", order.fulfillment_status)[:32]
+    if payment not in {"unknown", "pending", "paid", "failed", "refunded", "partially_refunded"}:
+        abort(400)
+    if fulfillment not in {"new", "processing", "fulfilled", "shipped", "delivered", "cancelled", "returned"}:
+        abort(400)
+    order.payment_status, order.fulfillment_status = payment, fulfillment
+    db.session.commit()
+    audit(session.get("admin_email", "admin"), "order.updated", order.site.slug, order.order_number)
+    return redirect(url_for("admin_site", slug=order.site.slug))
+
+@app.get("/admin/order/<int:order_id>/invoice")
+@admin_required
+def admin_order_invoice(order_id):
+    order = db.session.get(StoreOrder, order_id)
+    if not order:
+        abort(404)
+    return render_template_string(INVOICE_HTML, order=order, site=order.site)
+
 @app.get("/setup")
 def setup_page():
     if Admin.query.first():
@@ -426,10 +531,11 @@ def admin_home():
     sites = Site.query.order_by(Site.name).all()
     site_data = []
     for site in sites:
-        site_data.append({"site": site, "count": Member.query.filter_by(site_id=site.id).count(), "admins": Member.query.filter_by(site_id=site.id, role="site_admin").count()})
+        site_data.append({"site": site, "count": Member.query.filter_by(site_id=site.id).count(), "admins": Member.query.filter_by(site_id=site.id, role="site_admin").count(), "orders": StoreOrder.query.filter_by(site_id=site.id).count()})
     logs = AuditLog.query.order_by(AuditLog.created_at.desc()).limit(20).all()
     pending_payments = CryptoPayment.query.filter_by(status="pending").order_by(CryptoPayment.created_at.asc()).limit(100).all()
-    return render_template_string(ADMIN_HTML, sites=site_data, logs=logs, csrf=session["csrf"], total=Member.query.count(), payments=pending_payments, wallet=BTC_ADDRESS)
+    recent_orders = StoreOrder.query.order_by(StoreOrder.created_at.desc()).limit(100).all()
+    return render_template_string(ADMIN_HTML, sites=site_data, logs=logs, csrf=session["csrf"], total=Member.query.count(), payments=pending_payments, wallet=BTC_ADDRESS, orders=recent_orders, order_total=StoreOrder.query.count())
 
 @app.post("/admin/sites")
 @admin_required
@@ -453,7 +559,8 @@ def admin_create_site():
 def admin_site(slug):
     site = Site.query.filter_by(slug=slug).first_or_404()
     members = Member.query.filter_by(site_id=site.id).order_by(Member.created_at.desc()).limit(500).all()
-    return render_template_string(SITE_HTML, site=site, members=members, csrf=session["csrf"])
+    orders = StoreOrder.query.filter_by(site_id=site.id).order_by(StoreOrder.created_at.desc()).limit(500).all()
+    return render_template_string(SITE_HTML, site=site, members=members, orders=orders, csrf=session["csrf"])
 
 @app.post("/admin/site/<slug>/member/<int:member_id>")
 @admin_required
@@ -528,12 +635,17 @@ def admin_overview():
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
-ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p>Getrennte Konten pro Webseite · zentrale Übersicht · individuelle Admin-Rechte</p><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Webseiten registrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
-SITE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} · Mitglieder</title><body style="background:#090d18;color:#fff;font:15px system-ui;margin:0;padding:24px"><h1>{{site.name}} · Mitgliederverwaltung</h1><p>Konten dieser Webseite sind von allen anderen Plattformen getrennt.</p><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th align="left">Benutzer</th><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Aktion</th></tr>{% for m in members %}<tr><td>{{m.username}}</td><td>{{m.email}}</td><td>{{m.role}}</td><td>{{m.status}}</td><td><form method="post" action="/admin/site/{{site.slug}}/member/{{m.id}}"><input type="hidden" name="csrf" value="{{csrf}}"><button name="action" value="promote">Admin</button><button name="action" value="disable">Sperren</button><button name="action" value="enable">Aktivieren</button></form></td></tr>{% endfor %}</table></body></html>"""
+ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p>Getrennte Konten pro Webseite · zentrale Übersicht · individuelle Admin-Rechte</p><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Webseiten registrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2>Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
+SITE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} · Mitglieder</title><body style="background:#090d18;color:#fff;font:15px system-ui;margin:0;padding:24px"><h1>{{site.name}} · Mitgliederverwaltung</h1><p>Konten dieser Webseite sind von allen anderen Plattformen getrennt.</p><p>Integrationsschlüssel: <code>{{site.webhook_token or "Noch nicht angelegt"}}</code></p><form method="post" action="/admin/site/{{site.slug}}/integration-token"><input type="hidden" name="csrf" value="{{csrf}}"><button>Webhook-Token neu erzeugen</button></form><h2>Bestellungen & Rechnungen</h2><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th><th>Bearbeiten</th></tr>{% for o in orders %}<tr><td>{{o.order_number}}</td><td>{{o.customer_name}}<br>{{o.customer_email}}</td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Öffnen</a></td><td><form method="post" action="/admin/order/{{o.id}}/update"><input type="hidden" name="csrf" value="{{csrf}}"><select name="payment_status"><option>{{o.payment_status}}</option><option>pending</option><option>paid</option><option>failed</option><option>refunded</option></select><select name="fulfillment_status"><option>{{o.fulfillment_status}}</option><option>processing</option><option>fulfilled</option><option>shipped</option><option>delivered</option><option>cancelled</option></select><button>Speichern</button></form></td></tr>{% endfor %}</table><h2>Mitglieder</h2><table width="100%" cellpadding="9" style="border-collapse:collapse;background:#121a2b"><tr><th align="left">Benutzer</th><th>E-Mail</th><th>Rolle</th><th>Status</th><th>Aktion</th></tr>{% for m in members %}<tr><td>{{m.username}}</td><td>{{m.email}}</td><td>{{m.role}}</td><td>{{m.status}}</td><td><form method="post" action="/admin/site/{{site.slug}}/member/{{m.id}}"><input type="hidden" name="csrf" value="{{csrf}}"><button name="action" value="promote">Admin</button><button name="action" value="disable">Sperren</button><button name="action" value="enable">Aktivieren</button></form></td></tr>{% endfor %}</table></body></html>"""
+INVOICE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><title>Rechnung {{order.invoice_number or order.order_number}}</title><style>body{font:15px Arial;max-width:850px;margin:40px auto;color:#111}header{display:flex;justify-content:space-between;border-bottom:2px solid #222;padding-bottom:20px}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #ddd;text-align:left}.right{text-align:right}@media print{button{display:none}}</style><button onclick="print()">Drucken / als PDF speichern</button><header><div><h1>Rechnung</h1><b>{{site.name}}</b></div><div><b>{{order.invoice_number or order.order_number}}</b><br>{{order.created_at}}</div></header><p>Rechnung an: {{order.customer_name}} · {{order.customer_email}}</p><table><tr><th>Artikel</th><th>Menge</th><th>Einzelpreis</th><th>Gesamt</th></tr>{% for item in order.items_json or [] %}<tr><td>{{item.name}}</td><td>{{item.quantity}}</td><td>{{item.unit_price}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><h2 class="right">Gesamt: {{order.total_amount}} {{order.currency}}</h2><p>Zahlungsstatus: {{order.payment_status}} · Bestellstatus: {{order.fulfillment_status}}</p>{% if order.invoice_url %}<p><a href="{{order.invoice_url}}">Originalrechnung öffnen</a></p>{% endif %}</html>"""
 SITE_READONLY_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{site.name}} Admin</title><body style="background:#090d18;color:#fff;font:15px system-ui;padding:24px"><h1>{{site.name}} · Lokale Administration</h1><p>Angemeldet als {{admin_name}}. Diese Ansicht ist auf deine Webseite begrenzt.</p><p>{{members|length}} Mitglieder geladen. Vollständige Aktionen erfolgen über die zentrale Admin-Konsole.</p></body></html>"""
 
 with app.app_context():
     db.create_all()
+    site_columns = {col["name"] for col in inspect(db.engine).get_columns("site")}
+    if "webhook_token" not in site_columns:
+        db.session.execute(text("ALTER TABLE site ADD COLUMN webhook_token VARCHAR(96)"))
+        db.session.commit()
     if "credit_balance" not in {col["name"] for col in inspect(db.engine).get_columns("member")}:
         db.session.execute(text("ALTER TABLE member ADD COLUMN credit_balance INTEGER NOT NULL DEFAULT 0"))
         db.session.commit()
@@ -542,5 +654,5 @@ with app.app_context():
         with open(registry_path, "r", encoding="utf-8") as registry_file:
             for item in json.load(registry_file):
                 if item["slug"] not in {"royal-palace-4r57", "business-real-estate-membership"} and not Site.query.filter_by(slug=item["slug"]).first():
-                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"]))
+                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48)))
         db.session.commit()
