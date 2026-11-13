@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, jsonify, request, session, redirect, url_for, render_template_string, abort
+from flask import Flask, jsonify, request, session, redirect, url_for, render_template_string, abort, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -144,6 +144,10 @@ def security_headers(response):
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
         response.headers["Vary"] = "Origin"
     return response
+
+@app.get("/membership-widget.js")
+def membership_widget():
+    return send_from_directory(os.path.dirname(__file__), "membership-widget.js", mimetype="application/javascript")
 
 @app.get("/health")
 def health():
@@ -345,6 +349,40 @@ def admin_member_action(slug, member_id):
     db.session.commit()
     audit("admin", "member." + action, slug, str(member.id))
     return redirect(url_for("admin_site", slug=slug))
+
+
+@app.get("/api/<slug>/admin/members")
+def local_admin_members(slug):
+    site, actor = current_member(slug)
+    if not site or not actor or actor.role not in ("site_admin", "superadmin"):
+        return jsonify(error="Keine Berechtigung."), 403
+    rows = Member.query.filter_by(site_id=site.id).order_by(Member.created_at.desc()).limit(500).all()
+    return jsonify(members=[{"id": m.id, "username": m.username, "email": m.email, "role": m.role, "status": m.status, "created_at": m.created_at.isoformat()} for m in rows])
+
+@app.patch("/api/<slug>/admin/members/<int:member_id>")
+def local_admin_member_action(slug, member_id):
+    site, actor = current_member(slug)
+    if not site or not actor or actor.role not in ("site_admin", "superadmin"):
+        return jsonify(error="Keine Berechtigung."), 403
+    target = Member.query.filter_by(id=member_id, site_id=site.id).first()
+    if not target:
+        return jsonify(error="Mitglied nicht gefunden."), 404
+    data = request.get_json(silent=True) or {}
+    action = data.get("action")
+    if action == "disable":
+        target.status = "disabled"
+        target.token_version += 1
+    elif action == "enable":
+        target.status = "active"
+    elif action == "promote" and actor.role == "superadmin":
+        target.role = "site_admin"
+    elif action == "demote" and actor.role == "superadmin":
+        target.role = "member"
+    else:
+        return jsonify(error="Aktion nicht erlaubt."), 403
+    db.session.commit()
+    audit("member:" + actor.username, "local.member." + action, site.slug, str(target.id))
+    return jsonify(ok=True)
 
 @app.get("/site-admin/<slug>")
 def local_site_admin(slug):
