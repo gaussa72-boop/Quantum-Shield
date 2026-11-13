@@ -701,8 +701,13 @@ with app.app_context():
     if os.path.exists(registry_path):
         with open(registry_path, "r", encoding="utf-8") as registry_file:
             for item in json.load(registry_file):
-                if not Site.query.filter_by(slug=item["slug"]).first():
+                registered = Site.query.filter_by(slug=item["slug"]).first()
+                if not registered:
                     db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"], webhook_token=secrets.token_urlsafe(48), membership_enabled=item.get("membership_enabled", True)))
+                else:
+                    registered.name = item["name"]
+                    registered.origin = item["origin"]
+                    registered.membership_enabled = item.get("membership_enabled", True)
         db.session.commit()
     for registered_site in Site.query.filter_by(webhook_token=None).all():
         registered_site.webhook_token = secrets.token_urlsafe(48)
