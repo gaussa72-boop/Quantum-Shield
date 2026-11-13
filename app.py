@@ -912,6 +912,8 @@ with app.app_context():
         for legacy in legacy_tokens:
             db.session.execute(text("UPDATE site SET webhook_token_hash = :digest, webhook_token = NULL WHERE id = :id"), {"digest": hashlib.sha256(legacy.webhook_token.encode("utf-8")).hexdigest(), "id": legacy.id})
         db.session.commit()
+    db.session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_site_webhook_token_hash ON site (webhook_token_hash)"))
+    db.session.commit()
     member_columns = {col["name"] for col in inspect(db.engine).get_columns("member")}
     if "credit_balance" not in member_columns:
         db.session.execute(text("ALTER TABLE member ADD COLUMN credit_balance INTEGER NOT NULL DEFAULT 0"))
