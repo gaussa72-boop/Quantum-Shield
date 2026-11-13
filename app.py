@@ -42,6 +42,7 @@ ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", "
 SETUP_TOKEN = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
 BTC_ADDRESS = os.getenv("BTC_RECEIVE_ADDRESS", "").strip()
 BTC_NETWORK = "Bitcoin mainnet"
+CRYPTO_TOPUPS_ENABLED = os.getenv("CRYPTO_TOPUPS_ENABLED", "false").lower() == "true"
 GENERATION_PRICES = {"ai_generation": 1, "image_generation": 2, "video_generation": 5, "music_generation": 3, "game_generation": 25, "dlc_generation": 15, "mod_generation": 10}
 
 class Site(db.Model):
@@ -282,7 +283,7 @@ def credit_balance(slug):
         return jsonify(error="Webseite nicht gefunden."), 404
     if not member:
         return jsonify(error="Anmeldung erforderlich."), 401
-    return jsonify(balance=member.credit_balance, currency="USD", credit_value="1 credit = 1 USD", prices=GENERATION_PRICES, wallet=BTC_ADDRESS, network=BTC_NETWORK, payment_enabled=bool(BTC_ADDRESS))
+    return jsonify(balance=member.credit_balance, currency="USD", credit_value="1 credit = 1 USD", prices=GENERATION_PRICES, wallet=BTC_ADDRESS, network=BTC_NETWORK, payment_enabled=bool(BTC_ADDRESS) and CRYPTO_TOPUPS_ENABLED)
 
 @app.get("/api/<slug>/credits/history")
 def credit_history(slug):
@@ -307,8 +308,8 @@ def credit_purchase(slug):
     txid = str(data.get("txid", "")).strip().lower()
     if not amount.is_finite() or amount < Decimal("5.00") or amount > Decimal("10000.00") or amount != amount.to_integral_value():
         return jsonify(error="Bitte einen ganzen USD-Betrag zwischen 5 und 10.000 eingeben."), 400
-    if not BTC_ADDRESS:
-        return jsonify(error="Bitcoin-Empfangsadresse ist noch nicht konfiguriert. Bitte später erneut versuchen."), 503
+    if not BTC_ADDRESS or not CRYPTO_TOPUPS_ENABLED:
+        return jsonify(error="Krypto-Aufladungen sind bis zur Einrichtung einer dauerhaften Produktivdatenbank deaktiviert."), 503
     if not re.fullmatch(r"[a-f0-9]{64}", txid):
         return jsonify(error="Bitte eine gültige Bitcoin-Transaktions-ID mit 64 Hex-Zeichen eingeben."), 400
     if CryptoPayment.query.filter_by(txid=txid).first():
