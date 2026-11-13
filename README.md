@@ -56,3 +56,12 @@ The widget uses sessionStorage for its short-lived bearer token. Each site's mem
 
 ## Important deployment and security status
 The initial Render test database is free and expires on 2026-12-13. Do not use it for production or real member balances. Before real payments: use a persistent paid database, Redis-backed rate limiting, email verification and password reset, MFA for administrators, strict origins, operational backups, and an independent Bitcoin transaction verification procedure. The app currently records TXIDs and supports manual review; it does not independently query the Bitcoin network or determine fiat exchange value.
+
+## ULTIMA autonomy and publishing policy
+- `ULTIMA_AI_MODE=multi` selects the multi-provider integration mode. This is a routing/configuration mode, not proof that providers are connected.
+- Provider adapters and credentials must be configured separately in Render as secret environment variables. Never commit API keys to GitHub.
+- `ULTIMA_PUBLISH_MODE=approval` is the safe default: generated content remains a draft until the owner explicitly approves it. Do not grant an agent unrestricted access to publish, alter prices, change checkout/payment settings, or deploy production code.
+- The current core exposes the active AI and publishing policy in `/health`. It does not itself generate content, train model weights, crawl the internet continuously, or publish to third-party sites.
+- Recommended workflow: research/source capture -> draft -> malware/copyright/privacy/policy checks -> owner approval -> publish via the target platform's official API -> audit log and notification.
+- For Shopify/Printful and order integrations, configure each site's `ULTIMA_ORDER_TOKEN` only after obtaining its site-specific token in the authenticated central admin. BullRun additionally requires a Shopify webhook secret and a verified Shopify webhook. Never reuse tokens across sites.
+- Do not enable automatic payment approval or automatic deployment from AI-generated code.
