@@ -5,6 +5,12 @@
 
   var username = "Ari_phenex";
   var link = "https://t.me/" + username;
+  var designLink = document.createElement("link");
+  designLink.rel = "stylesheet";
+  designLink.href = "https://ultima-membership-api.onrender.com/design-system.css";
+  designLink.dataset.ultimaDesignSystem = "2026";
+  document.head.appendChild(designLink);
+
   var style = document.createElement("style");
   style.textContent = [
     "#ultima-support-button{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;gap:10px;padding:13px 17px;border:1px solid rgba(125,211,252,.45);border-radius:999px;background:#101827;color:#f8fafc;font:600 14px/1.2 system-ui,-apple-system,sans-serif;text-decoration:none;box-shadow:0 8px 28px rgba(0,0,0,.28);}",
