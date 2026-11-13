@@ -1,9 +1,9 @@
 # ULTIMA Membership & Credit Core
 
-Central membership and credit API for the non-Rothshild Render portfolio. Rothshild sites are explicitly excluded.
+Central membership and credit API for the complete registered Render portfolio, including the Rothshild properties.
 
 ## Membership architecture
-- Every website has a distinct slug and isolated member namespace (site_id). No cross-site single sign-on.
+- Every website, including each Rothshild property, has a distinct slug and isolated member namespace (site_id). No cross-site single sign-on; the central ULTIMA owner manages the portfolio, while member accounts, tokens, credits, and orders remain site-scoped.
 - Members register and authenticate separately for each website.
 - Central admin can register websites, view membership counts, and manage members per website.
 - A site administrator role is scoped to one website.
