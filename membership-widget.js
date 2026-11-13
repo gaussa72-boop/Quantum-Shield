@@ -1,7 +1,7 @@
 (()=>{"use strict";
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function init(opts={}){
- const api=(opts.apiBase||"https://ultima-membership-core.onrender.com").replace(/\/$/,""),slug=opts.siteSlug||"";
+ const api=(opts.apiBase||"https://ultima-membership-api.onrender.com").replace(/\/$/,""),slug=opts.siteSlug||"";
  if(!slug)return;
  const key="ultima-session:"+slug,token=()=>sessionStorage.getItem(key)||"",save=t=>t?sessionStorage.setItem(key,t):sessionStorage.removeItem(key);
  const style=document.createElement("style");style.textContent="#ultima-launch{position:fixed;right:20px;bottom:20px;z-index:2147483000;border:1px solid #8ddde8;background:linear-gradient(135deg,#15233b,#0b1222);color:#effbff;border-radius:999px;padding:12px 18px;font:600 14px system-ui;box-shadow:0 12px 36px #0008;cursor:pointer}#ultima-panel{position:fixed;right:20px;bottom:76px;z-index:2147483000;width:min(360px,calc(100vw - 32px));background:#0d1424;color:#f4f7ff;border:1px solid #31415e;border-radius:18px;padding:18px;box-shadow:0 20px 70px #000b;font:14px system-ui}#ultima-panel input,#ultima-panel textarea{box-sizing:border-box;width:100%;padding:11px;margin:6px 0;border-radius:9px;border:1px solid #34445f;background:#080e1b;color:white;font:inherit}#ultima-panel button{padding:10px 13px;border:0;border-radius:9px;background:#9ce5eb;color:#08121b;font-weight:700;cursor:pointer;margin:5px 4px 0 0}#ultima-panel .secondary{background:#263650;color:#eaf5ff}#ultima-panel small{color:#aab8ce}#ultima-panel [role=status]{min-height:20px;color:#ffcc9a}@media(max-width:480px){#ultima-launch{right:12px;bottom:12px}#ultima-panel{right:12px;bottom:66px}}";document.head.appendChild(style);
