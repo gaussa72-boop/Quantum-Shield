@@ -40,12 +40,12 @@ function init(opts={}){
   const paidFeature=function(path){
    const p=path.toLowerCase();
    if(/\/(auth|login|register|profile|logout|payment|payments|credits|checkout|orders|upload|webhook|search|like|comment|message|settings)(\/|$)/.test(p))return null;
-   if(/image|img2img/.test(p))return "image_generation";
-   if(/video|clip/.test(p))return "video_generation";
-   if(/music|audio|song/.test(p))return "music_generation";
-   if(/game|dlc/.test(p))return "game_generation";
-   if(/mod/.test(p))return "mod_generation";
-   if(/chat|completion|generate|generation|\/ai(\/|$)/.test(p))return "ai_generation";
+   if(/(?:^|\/)(?:image|images|img2img)(?:\/|$)|generate[-_]image|image[-_]generate/.test(p))return "image_generation";
+   if(/(?:^|\/)(?:video|clip)(?:\/|$)|generate[-_]video|video[-_]generate/.test(p))return "video_generation";
+   if(/(?:^|\/)(?:music|audio|song)(?:\/|$)|generate[-_](?:music|audio|song)/.test(p))return "music_generation";
+   if(/(?:^|\/)(?:game|dlc)(?:\/|$)|generate[-_]game/.test(p))return "game_generation";
+   if(/(?:^|\/)mod(?:\/|$)|generate[-_]mod/.test(p))return "mod_generation";
+   if(/(?:^|\/)(?:chat|completion|generate|generation)(?:\/|$)|\/ai\/(?:chat|generate)/.test(p))return "ai_generation";
    return null;
   };
   window.fetch=async function(input,init={}){
