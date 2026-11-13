@@ -290,6 +290,62 @@ def me(slug):
         return jsonify(error="Anmeldung erforderlich."), 401
     return jsonify(member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "bio": member.bio, "avatar_url": member.avatar_url, "role": member.role, "created_at": member.created_at.isoformat(), "is_lifetime_premium": member.is_lifetime_premium})
 
+
+@app.post("/api/<slug>/copilot")
+@limiter.limit("20 per hour")
+def member_copilot(slug):
+    site, member = current_member(slug)
+    if not site:
+        return jsonify(error="Webseite nicht gefunden."), 404
+    if not member:
+        return jsonify(error="Bitte zuerst anmelden."), 401
+    if member.status != "active":
+        return jsonify(error="Dein Konto ist noch nicht freigegeben."), 403
+    if AI_MODE == "off":
+        return jsonify(error="Der KI-Copilot ist für diese Plattform derzeit deaktiviert."), 503
+    api_key = os.getenv("ULTIMA_AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return jsonify(error="Der Copilot ist vorbereitet. Der Betreiber muss noch ULTIMA_AI_API_KEY als Render-Secret hinterlegen."), 503
+    data = request.get_json(silent=True) or {}
+    message = str(data.get("message", "")).strip()
+    history = data.get("history", [])
+    if not message or len(message) > 4000:
+        return jsonify(error="Bitte gib eine Nachricht mit maximal 4.000 Zeichen ein."), 400
+    safe_history = []
+    if isinstance(history, list):
+        for item in history[-8:]:
+            if isinstance(item, dict) and item.get("role") in ("user", "assistant"):
+                content = str(item.get("content", ""))[:1500]
+                if content:
+                    safe_history.append({"role": item["role"], "content": content})
+    base_url = os.getenv("ULTIMA_AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    model = os.getenv("ULTIMA_AI_MODEL", "gpt-4.1-mini")
+    system_prompt = (
+        "Du bist ULTIMA Copilot, ein hilfreicher Assistent innerhalb einer Website. "
+        "Antworte in der Sprache des Mitglieds, standardmäßig Deutsch. "
+        "Website: " + site.name + " (" + site.slug + "). "
+        "Mitgliedsrolle: " + member.role + ". Premium: " + ("ja" if member.is_lifetime_premium else "nein") + ". "
+        "Hilf bei Navigation, Profil, Mitgliedschaft, Shop, Inhalten, Ideen, Website-Bedienung, "
+        "Fehlersuche und Planung. Behaupte niemals, du hättest etwas veröffentlicht, gekauft, geändert "
+        "oder deployed, wenn keine entsprechende bestätigte Aktion ausgeführt wurde. "
+        "Du hast keinen direkten Zugriff auf private GitHub-/Render-Konten oder andere Mitgliederkonten. "
+        "Fordere niemals Passwörter, API-Schlüssel, Setup-Tokens oder Zahlungsgeheimnisse an. "
+        "Bei Änderungen an Preisen, Zahlungen, Konten, Veröffentlichungen oder produktivem Code "
+        "erkläre den Vorschlag und verlange ausdrückliche Freigabe durch einen berechtigten Administrator."
+    )
+    payload = {"model": model, "messages": [{"role": "system", "content": system_prompt}] + safe_history + [{"role": "user", "content": message}], "temperature": 0.4, "max_tokens": 900}
+    req = Request(base_url + "/chat/completions", data=json.dumps(payload).encode("utf-8"), headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=25) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        answer = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not answer:
+            raise ValueError("Leere KI-Antwort")
+        return jsonify(ok=True, answer=str(answer)[:8000], model=model, site=site.slug)
+    except Exception as exc:
+        app.logger.warning("Copilot provider request failed: %s", type(exc).__name__)
+        return jsonify(error="Der KI-Dienst ist momentan nicht erreichbar. Bitte später erneut versuchen."), 502
+
 @app.patch("/api/<slug>/profile")
 def update_profile(slug):
     site, member = current_member(slug)
