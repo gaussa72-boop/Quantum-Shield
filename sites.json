@@ -2,179 +2,246 @@
   {
     "slug": "astralis-omega",
     "name": "Astralis Omega",
-    "origin": "https://astralis-omega.onrender.com"
+    "origin": "https://astralis-omega.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "novatube",
     "name": "NovaTube",
-    "origin": "https://novatube-a10l.onrender.com"
+    "origin": "https://novatube-a10l.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ate-rea-vermachtnis",
     "name": "Ate Rea Vermächtnis",
-    "origin": "https://ate-rea-vermachtnis.onrender.com"
+    "origin": "https://ate-rea-vermachtnis.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "dropshift-store",
     "name": "DropShift Store",
-    "origin": "https://dropshift-store.onrender.com"
+    "origin": "https://dropshift-store.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "quantum-ai",
     "name": "Quantum.AI",
-    "origin": "https://quantum-ai-zeah.onrender.com"
+    "origin": "https://quantum-ai-zeah.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ki-game-mod",
     "name": "KI Game Mod",
-    "origin": "https://ki-game-mod.onrender.com"
+    "origin": "https://ki-game-mod.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "note-ki",
     "name": "Note-KI",
-    "origin": "https://note-ki.onrender.com"
+    "origin": "https://note-ki.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ipad-app-ionos-7",
     "name": "iPad App IONOS-7",
-    "origin": "https://ipad-app-ionos-7.onrender.com"
+    "origin": "https://ipad-app-ionos-7.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "galactic-ai-v3",
     "name": "Galactic AI V3",
-    "origin": "https://galactic-ai-v3.onrender.com"
+    "origin": "https://galactic-ai-v3.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-super-intelligence",
     "name": "Quantum Super Intelligence",
-    "origin": "https://quantum-super-intelligence.onrender.com"
+    "origin": "https://quantum-super-intelligence.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ionos-8",
     "name": "IONOS-8",
-    "origin": "https://ionos-8.onrender.com"
+    "origin": "https://ionos-8.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-ki-cat-chat",
     "name": "Quantum KI CAT Chat",
-    "origin": "https://quantum-ki-cat-chat.onrender.com"
+    "origin": "https://quantum-ki-cat-chat.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ai-quantumlight",
     "name": "AI Quantumlight",
-    "origin": "https://ai-quantumlight.onrender.com"
+    "origin": "https://ai-quantumlight.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantenformel",
     "name": "Quantenformel",
-    "origin": "https://quantenformel.onrender.com"
+    "origin": "https://quantenformel.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-singularity",
     "name": "Quantum Singularity",
-    "origin": "https://quantum-singularity.onrender.com"
+    "origin": "https://quantum-singularity.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ionos-ai",
     "name": "IONOS AI",
-    "origin": "https://ionos-ai.onrender.com"
+    "origin": "https://ionos-ai.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "rea-signature",
     "name": "Rea Signature",
-    "origin": "https://rea-signature.onrender.com"
+    "origin": "https://rea-signature.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "quantum-ai-one",
     "name": "Quantum AI-One",
-    "origin": "https://quantum-ai-renewed.onrender.com"
+    "origin": "https://quantum-ai-renewed.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-ki-ultra-pro-v2-renewed",
     "name": "Quantum KI Ultra Pro V2 (Renewed)",
-    "origin": "https://quantum-ki-ultra-pro-v2-renewed.onrender.com"
+    "origin": "https://quantum-ki-ultra-pro-v2-renewed.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "bullrun-apparel",
     "name": "BullRun Apparel",
-    "origin": "https://bullrun-apparel.onrender.com"
+    "origin": "https://bullrun-apparel.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "quantum-mirror-wonderland",
     "name": "Quantum Mirror Wonderland",
-    "origin": "https://quantum-mirror-wonderland.onrender.com"
+    "origin": "https://quantum-mirror-wonderland.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ionos-ki",
     "name": "IONOS-KI",
-    "origin": "https://ionos-ki.onrender.com"
+    "origin": "https://ionos-ki.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ionos-7",
     "name": "IONOS-7",
-    "origin": "https://ionos-7.onrender.com"
+    "origin": "https://ionos-7.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ultraki-ai",
     "name": "UltraKI.AI",
-    "origin": "https://ultraki-ai.onrender.com"
+    "origin": "https://ultraki-ai.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "ultra-ki-v2",
     "name": "Ultra KI V2",
-    "origin": "https://ultra-ki-v2.onrender.com"
+    "origin": "https://ultra-ki-v2.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-ki-ultra-pro-v2",
     "name": "Quantum KI Ultra Pro V2",
-    "origin": "https://quantum-ki-ultra-pro-v2.onrender.com"
+    "origin": "https://quantum-ki-ultra-pro-v2.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantumai-chat",
     "name": "QuantumAI Chat",
-    "origin": "https://quantumai-chat.onrender.com"
+    "origin": "https://quantumai-chat.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "trinity-trading",
     "name": "Trinity Trading",
-    "origin": "https://trinity-trading-k03l.onrender.com"
+    "origin": "https://trinity-trading-k03l.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "aktiv-lyca-rgds",
     "name": "Aktiv Lyca",
-    "origin": "https://aktiv-lyca-rgds.onrender.com"
+    "origin": "https://aktiv-lyca-rgds.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "sneaker-store",
     "name": "Sneaker Store",
-    "origin": "https://sneaker-store-bow5.onrender.com"
+    "origin": "https://sneaker-store-bow5.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "webshop-parfum",
     "name": "Webshop Parfum",
-    "origin": "https://webshop-parfum-90dl.onrender.com"
+    "origin": "https://webshop-parfum-90dl.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "aktiv-lyca-rnmc",
     "name": "Aktiv Lyca",
-    "origin": "https://aktiv-lyca-rnmc.onrender.com"
+    "origin": "https://aktiv-lyca-rnmc.onrender.com",
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "royal-palace-4r57",
     "name": "Rothshild · Royal Palace",
     "origin": "https://royal-palace-4r57.onrender.com",
-    "is_active": true
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "business-real-estate-membership",
     "name": "Rothshild · Business Real Estate",
     "origin": "https://business-real-estate-membership-wswk.onrender.com",
-    "is_active": true
+    "is_active": false,
+    "membership_enabled": false
   },
   {
     "slug": "lichtkrieger",
     "name": "LICHTKRIEGER Cloud Gaming",
     "origin": "https://lichtkrieger-cloud-gaming.onrender.com",
-    "is_active": true
+    "is_active": true,
+    "membership_enabled": true
   }
 ]
