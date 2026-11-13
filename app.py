@@ -2,6 +2,7 @@ import os
 import re
 import json
 import secrets
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
@@ -90,6 +91,17 @@ class Member(db.Model):
     is_lifetime_premium = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     __table_args__ = (UniqueConstraint("site_id", "email", name="uq_member_site_email"), UniqueConstraint("site_id", "username", name="uq_member_site_username"))
+
+class RegistrationCode(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    site_id = db.Column(db.Integer, db.ForeignKey("site.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    created_by = db.Column(db.String(255), nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    site = db.relationship("Site")
 
 class CryptoPayment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -236,7 +248,7 @@ def public_site_config(slug):
     site = site_for(slug)
     if not site:
         return jsonify(error="Webseite nicht gefunden oder nicht freigeschaltet."), 404
-    return jsonify(site={"slug": site.slug, "name": site.name, "registration_enabled": True})
+    return jsonify(site={"slug": site.slug, "name": site.name, "registration_enabled": True, "registration_code_required": True})
 
 @app.post("/api/<slug>/register")
 @limiter.limit("5 per hour")
@@ -248,6 +260,14 @@ def register(slug):
     email = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
+    raw_code = str(data.get("registration_code", "")).strip()
+    if not raw_code or len(raw_code) > 100:
+        return jsonify(error="Ein gültiger, einmaliger Registrierungscode ist erforderlich."), 400
+    code_hash = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+    invite = RegistrationCode.query.filter_by(site_id=site.id, code_hash=code_hash).with_for_update().first()
+    now = datetime.now(timezone.utc)
+    if not invite or invite.used_at or invite.revoked_at or invite.expires_at <= now:
+        return jsonify(error="Registrierungscode ungültig, abgelaufen oder bereits verwendet."), 403
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 255:
         return jsonify(error="Bitte gib eine gültige E-Mail-Adresse ein."), 400
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
@@ -261,6 +281,7 @@ def register(slug):
     is_owner = bool(ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL)
     member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if is_owner else "member", status="active" if is_owner else "pending", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
     db.session.add(member)
+    invite.used_at = now
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
     return jsonify(ok=True, approval_required=not is_owner, status=member.status, message="Registrierung eingegangen. Dein Konto wird nach Freigabe durch die Webseiten-Administration aktiviert." if not is_owner else "Inhaber-Konto angelegt.", token=issue_token(member) if is_owner else None, member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "status": member.status, "is_lifetime_premium": member.is_lifetime_premium}), 201
