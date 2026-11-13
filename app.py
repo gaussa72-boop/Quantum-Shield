@@ -244,7 +244,7 @@ def register(slug):
         return jsonify(error="Für diese Webseite existiert bereits ein Konto mit dieser E-Mail."), 409
     if Member.query.filter_by(site_id=site.id, username=username).first():
         return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
-    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
+    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL else "member", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
     db.session.add(member)
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
