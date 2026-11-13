@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -138,7 +139,7 @@ def security_headers(response):
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     response.headers.setdefault("Cache-Control", "no-store" if request.path.startswith("/api/") or request.path.startswith("/admin") else "public, max-age=60")
     origin = request.headers.get("Origin", "").rstrip("/")
-    if origin in ALLOWED_ORIGINS:
+    if origin in ALLOWED_ORIGINS or Site.query.filter_by(origin=origin, is_active=True).first():
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
@@ -406,3 +407,10 @@ SITE_READONLY_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><me
 
 with app.app_context():
     db.create_all()
+    registry_path = os.path.join(os.path.dirname(__file__), "sites.json")
+    if os.path.exists(registry_path):
+        with open(registry_path, "r", encoding="utf-8") as registry_file:
+            for item in json.load(registry_file):
+                if not Site.query.filter_by(slug=item["slug"]).first():
+                    db.session.add(Site(slug=item["slug"], name=item["name"], origin=item["origin"]))
+        db.session.commit()
