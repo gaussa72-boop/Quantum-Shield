@@ -305,7 +305,7 @@ def credit_purchase(slug):
     except (InvalidOperation, ValueError):
         return jsonify(error="Ungültiger USD-Betrag."), 400
     txid = str(data.get("txid", "")).strip().lower()
-    if amount < Decimal("5.00") or amount > Decimal("10000.00") or amount != amount.to_integral_value():
+    if not amount.is_finite() or amount < Decimal("5.00") or amount > Decimal("10000.00") or amount != amount.to_integral_value():
         return jsonify(error="Bitte einen ganzen USD-Betrag zwischen 5 und 10.000 eingeben."), 400
     if not re.fullmatch(r"[a-f0-9]{64}", txid):
         return jsonify(error="Bitte eine gültige Bitcoin-Transaktions-ID mit 64 Hex-Zeichen eingeben."), 400
@@ -329,6 +329,7 @@ def consume_credits(slug):
     if not cost or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", request_id):
         return jsonify(error="Unbekannte Funktion oder ungültige request_id."), 400
     reference = "generation:" + request_id
+    member = Member.query.filter_by(id=member.id, site_id=site.id).with_for_update().first()
     existing = CreditLedger.query.filter_by(site_id=site.id, member_id=member.id, reference=reference).first()
     if existing:
         return jsonify(ok=True, already_charged=True, charged=abs(min(existing.delta, 0)), balance=member.credit_balance)
