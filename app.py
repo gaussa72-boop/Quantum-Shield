@@ -690,7 +690,7 @@ def admin_login_post():
     admin = Admin.query.filter(func.lower(Admin.email) == email).first()
 
     if not admin or not check_password_hash(admin.password_hash, password):
-        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein aktives Rothshild-Inhaberkonto oder ein eingerichtetes ULTIMA-Admin-Konto."), 401
+        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein eingerichtetes ULTIMA-Admin-Konto."), 401
 
     session.clear()
     session["admin_id"] = admin.id
