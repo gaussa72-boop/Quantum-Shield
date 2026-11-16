@@ -266,6 +266,7 @@ def design_system_css():
     return send_from_directory(os.path.dirname(__file__), "design-system.css", mimetype="text/css", max_age=300)
 
 @app.get("/health")
+@limiter.exempt
 def health():
     try:
         db.session.execute(db.text("SELECT 1"))
