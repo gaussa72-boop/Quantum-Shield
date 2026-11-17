@@ -1682,7 +1682,37 @@ def premium_application_create():
 @admin_required
 def admin_premium():
     applications = PremiumApplication.query.order_by(PremiumApplication.created_at.desc()).limit(300).all()
-    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Premium</title><style>body{background:#080b14;color:#edf1ff;font:15px system-ui;padding:24px;max-width:1100px;margin:auto}.card{background:#11182a;border:1px solid #26304a;border-radius:14px;padding:16px;margin:12px 0}button{padding:10px;background:#293b68;color:white;border:0;border-radius:8px}a{color:#8ce4f0}</style><h1>ULTIMA Premium · Anträge</h1><p><a href="/admin">← Control Center</a> · Tarif: <b>29,99 EUR / Monat</b></p>{% for a in applications %}<section class="card"><h3>#{{a.id}} · {{a.name}} · {{a.status}}</h3><p>{{a.email}} · <a href="{{a.website_url}}" target="_blank" rel="noopener">{{a.website_url}}</a></p><p>{{a.details}}</p><small>Eingegangen: {{a.created_at}} · Freigabe: {{a.approved_at or "offen"}} · Zahlung: {{a.paid_at or "offen"}}</small>{% if a.status == "pending" %}<form method="post" action="/admin/premium/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><button>Freigeben und Checkout senden</button></form><form method="post" action="/admin/premium/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form>{% elif a.checkout_url %}<p><a href="{{a.checkout_url}}">Checkout-Link</a></p>{% endif %}</section>{% else %}<p>Noch keine Premium-Anträge.</p>{% endfor %}</html>""",applications=applications,csrf=session["csrf"])
+    accounts = NetworkPremiumAccount.query.order_by(NetworkPremiumAccount.updated_at.desc()).limit(500).all()
+    invoices = NetworkPremiumInvoice.query.order_by(NetworkPremiumInvoice.created_at.desc()).limit(300).all()
+    active_accounts = sum(1 for a in accounts if (a.paid_until and a.paid_until > datetime.now(timezone.utc)) or (a.trial_ends_at and a.trial_ends_at > datetime.now(timezone.utc) and a.trial_used < a.trial_limit))
+    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Network Premium</title><style>
+body{background:#080b14;color:#edf1ff;font:15px system-ui;padding:24px;max-width:1250px;margin:auto}a{color:#8ce4f0}.card{background:#11182a;border:1px solid #26304a;border-radius:14px;padding:16px;margin:12px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.stat{font-size:25px;font-weight:800;color:#e8ce8d}button{padding:10px;background:#293b68;color:white;border:0;border-radius:8px;cursor:pointer}table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #293650;text-align:left;vertical-align:top}code{overflow-wrap:anywhere}.muted{color:#a8b4cd}
+</style><h1>ULTIMA Network Premium · Verwaltungscenter</h1><p><a href="/admin">← Control Center</a> · <a href="/portal">Zentrales Mitgliederportal ↗</a></p>
+<div class="grid"><section class="card"><small>PREMIUM-KONTEN</small><div class="stat">{{accounts|length}}</div></section><section class="card"><small>DERZEIT AKTIV</small><div class="stat">{{active_accounts}}</div></section><section class="card"><small>OFFENE BTC-RECHNUNGEN</small><div class="stat">{{pending_invoices}}</div></section><section class="card"><small>TESTPHASE</small><div class="stat">{{trial_days}} Tage · {{trial_uses}} Nutzungen</div></section></div>
+<section class="card"><h2>Einheitlicher Netzwerktarif</h2><p><b>{{price}} EUR / {{period_days}} Tage</b> · {{trial_days}} Tage kostenlose Testphase oder bis zu {{trial_uses}} Premium-Aktionen (je nachdem, was zuerst erreicht wird).</p><p>Die Verlängerung erfolgt nicht automatisch. Nutzer senden Bitcoin an die konfigurierte Wallet; das System prüft TXID, Empfangsadresse, Betrag und Bestätigungen. Premium wird erst nach {{required_confirmations}} Bitcoin-Bestätigungen freigeschaltet.</p><p>Wallet: <b>{{wallet or "Nicht konfiguriert"}}</b> · {{network}} · Checkout: <b>{{"bereit" if checkout_ready else "deaktiviert – Anbieter-/Walletdaten prüfen"}}</b></p><p class="muted">Produktiv-Checkout bleibt gesperrt, bis die Empfangsadresse und Anbieterangaben (Name, Anschrift, öffentliche URL) als Render-Secrets gesetzt sind.</p></section>
+<section class="card"><h2>Netzwerk-Premium-Mitglieder</h2><table><tr><th>E-Mail</th><th>Testverbrauch</th><th>Testphase bis</th><th>Bezahlt bis</th><th>Verlängerung</th></tr>{% for a in accounts %}<tr><td>{{a.email}}</td><td>{{a.trial_used}} / {{a.trial_limit}}</td><td>{{a.trial_ends_at or "Noch nicht gestartet"}}</td><td>{{a.paid_until or "—"}}</td><td>{{"Aus" if a.renewal_disabled else "Ein"}}</td></tr>{% else %}<tr><td colspan="5">Noch keine Premium-Konten angelegt.</td></tr>{% endfor %}</table></section>
+<section class="card"><h2>Bitcoin-Rechnungen / TXID-Prüfung</h2><table><tr><th>Datum</th><th>Konto</th><th>Rechnung</th><th>Betrag</th><th>TXID</th><th>Status</th><th>Aktion</th></tr>{% for x in invoices %}<tr><td>{{x.created_at}}</td><td>{{x.email}}<br><small>{{x.site_slug}}</small></td><td>{{x.invoice_code}}</td><td>{{x.amount_eur}} EUR<br>{{x.expected_sats}} sats</td><td><code>{{x.txid or "Noch nicht eingereicht"}}</code></td><td>{{x.status}} · {{x.confirmations}} conf.</td><td>{% if x.txid and x.status != "paid" %}<form method="post" action="/admin/premium/bitcoin/{{x.id}}/verify"><input type="hidden" name="csrf" value="{{csrf}}"><button>Blockchain erneut prüfen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7">Keine Rechnungen vorhanden.</td></tr>{% endfor %}</table></section>
+<section class="card"><h2>Frühere Premium-Anträge (legacy)</h2>{% for a in applications %}<p>#{{a.id}} · {{a.name}} · {{a.email}} · {{a.status}} · {{a.website_url}}{% if a.checkout_url %} · <a href="{{a.checkout_url}}">Checkout</a>{% endif %}</p>{% else %}<p>Keine alten Anträge.</p>{% endfor %}</section></html>""",
+        applications=applications,accounts=accounts,invoices=invoices,active_accounts=active_accounts,
+        pending_invoices=sum(1 for x in invoices if x.status in ("pending","confirming","awaiting_confirmations")),
+        trial_days=PREMIUM_TRIAL_DAYS,trial_uses=PREMIUM_TRIAL_USES,price=UNIFIED_PREMIUM_PRICE_EUR,
+        period_days=PREMIUM_PERIOD_DAYS,required_confirmations=PREMIUM_CONFIRMATIONS_REQUIRED,
+        wallet=BTC_ADDRESS,network=BTC_NETWORK,checkout_ready=premium_checkout_ready(),csrf=session["csrf"])
+
+@app.post("/admin/premium/bitcoin/<int:invoice_id>/verify")
+@admin_required
+def admin_premium_bitcoin_verify(invoice_id):
+    if not admin_csrf_ok():
+        abort(400)
+    invoice=db.session.get(NetworkPremiumInvoice,invoice_id)
+    if not invoice or not invoice.txid:
+        abort(404)
+    try:
+        verify_network_premium_invoice(invoice,invoice.txid)
+        audit("admin:"+session.get("admin_email",ADMIN_OWNER_EMAIL),"premium.bitcoin.verify",None,str(invoice.id))
+    except Exception as exc:
+        app.logger.warning("Admin BTC verification failed: %s",type(exc).__name__)
+    return redirect(url_for("admin_premium"))
 
 @app.post("/admin/premium/<int:application_id>/<action>")
 @admin_required
