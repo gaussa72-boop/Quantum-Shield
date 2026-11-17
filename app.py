@@ -845,6 +845,11 @@ def global_register():
     db.session.add(user)
     db.session.flush()
     if role == "owner":
+        existing_admin = Admin.query.filter(func.lower(Admin.email) == email).first()
+        if not existing_admin:
+            db.session.add(Admin(email=email, password_hash=user.password_hash, role="superadmin"))
+        else:
+            existing_admin.role = "superadmin"
         registry_path = os.path.join(os.path.dirname(__file__), "sites.json")
         excluded = ("lyca", "bullrun", "roth", "royal-palace", "business-real-estate")
         if os.path.exists(registry_path):
