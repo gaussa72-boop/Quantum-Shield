@@ -166,6 +166,75 @@ class PremiumApplication(db.Model):
     approved_at = db.Column(db.DateTime(timezone=True), nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+
+
+class GlobalUser(db.Model):
+    __tablename__ = "global_user"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    username = db.Column(db.String(48), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    display_name = db.Column(db.String(120), default="", nullable=False)
+    bio = db.Column(db.String(1000), default="", nullable=False)
+    avatar_url = db.Column(db.String(500), default="", nullable=False)
+    role = db.Column(db.String(24), default="member", nullable=False)
+    status = db.Column(db.String(24), default="active", nullable=False)
+    token_version = db.Column(db.Integer, default=0, nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class WebsiteProject(db.Model):
+    __tablename__ = "website_project"
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    slug = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    url = db.Column(db.String(500), nullable=False)
+    description = db.Column(db.String(2000), default="", nullable=False)
+    category = db.Column(db.String(60), default="Website", nullable=False)
+    status = db.Column(db.String(24), default="draft", nullable=False, index=True)
+    is_public = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    owner = db.relationship("GlobalUser", backref=db.backref("website_projects", lazy=True, cascade="all, delete-orphan"))
+
+global_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-global-identity-v1")
+
+def issue_global_token(user):
+    return global_serializer.dumps({"user_id": user.id, "version": user.token_version})
+
+def current_global_user():
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else ""
+    if not token:
+        return None
+    try:
+        payload = global_serializer.loads(token, max_age=30 * 24 * 60 * 60)
+    except (BadSignature, SignatureExpired):
+        return None
+    user = db.session.get(GlobalUser, payload.get("user_id"))
+    if not user or user.status != "active" or user.token_version != payload.get("version"):
+        return None
+    return user
+
+def clean_project_url(raw):
+    value = str(raw or "").strip()
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password:
+        return None
+    if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal", ".localhost")):
+        return None
+    if host.replace(".", "").isdigit():
+        return None
+    return value[:500]
+
+def project_payload(project):
+    return {"id": project.id, "name": project.name, "slug": project.slug, "url": project.url,
+            "description": project.description, "category": project.category, "status": project.status,
+            "is_public": project.is_public, "created_at": project.created_at.isoformat(),
+            "updated_at": project.updated_at.isoformat()}
+
+
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     actor = db.Column(db.String(255), nullable=False)
@@ -694,6 +763,229 @@ def setup_admin():
     db.session.add(admin)
     db.session.commit()
     return jsonify(ok=True, message="Administrator angelegt. Das Setup-Token danach aus Render entfernen.")
+
+
+
+GLOBAL_PORTAL_HTML = r"""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Konto & Websites</title>
+<style>
+:root{color-scheme:dark;--bg:#070b14;--panel:#111a2c;--line:#293b59;--gold:#e6c77b;--cyan:#72dce8;--muted:#a7b5ca}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -15%,#203858,transparent 55%),var(--bg);color:#f4f7fb;font:15px Inter,system-ui}main{max-width:1120px;margin:0 auto;padding:32px 18px 70px}
+header{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:18px 0}.brand{color:var(--gold);letter-spacing:.22em;font-size:12px}
+h1{font-size:clamp(30px,6vw,54px);margin:10px 0}h2{margin-top:0}.muted{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:linear-gradient(145deg,#121e32,#0c1423);border:1px solid var(--line);border-radius:18px;padding:22px;margin:16px 0;box-shadow:0 16px 50px #0004}
+input,textarea,select{width:100%;margin:7px 0 14px;padding:12px;border-radius:10px;border:1px solid var(--line);background:#081321;color:white}
+button,.btn{display:inline-block;padding:11px 16px;border:0;border-radius:10px;background:linear-gradient(100deg,var(--gold),#f5e7ba);color:#171a21;font-weight:750;cursor:pointer;text-decoration:none}
+button.secondary,.btn.secondary{background:#1b2a42;color:#eaf5ff;border:1px solid #3b5577}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+small{color:var(--muted)}.status{display:inline-block;padding:4px 9px;border-radius:20px;background:#253650;font-size:12px}
+.hidden{display:none!important}.project{border:1px solid var(--line);border-radius:13px;padding:16px;margin:10px 0;background:#0a1424}
+a{color:var(--cyan)}.notice{padding:12px;border-radius:10px;background:#14243a;margin:12px 0;white-space:pre-wrap}
+</style><main><header><div><div class="brand">ULTIMA NETWORK · CENTRAL IDENTITY</div><small>Ein Konto. Deine Profile. Deine Websites.</small></div><div class="row"><a href="https://ultima-central-45ne.onrender.com/">← Zum Verwaltungszentrum</a><button id="logout" class="secondary hidden">Abmelden</button></div></header>
+<section id="auth"><h1>Dein ULTIMA-Konto</h1><p class="muted">Ein zentrales Konto für dein Profil und deine registrierten Webprojekte.</p><div class="grid">
+<div class="card"><h2>Konto erstellen</h2><form id="register"><label>Anzeigename</label><input name="display_name" maxlength="120" required><label>Benutzername</label><input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]+" required><label>E-Mail</label><input name="email" type="email" required><label>Passwort (mind. 12 Zeichen)</label><input name="password" type="password" minlength="12" required><button>Konto erstellen</button></form></div>
+<div class="card"><h2>Anmelden</h2><form id="login"><label>E-Mail oder Benutzername</label><input name="identity" required><label>Passwort</label><input name="password" type="password" required><button>Anmelden</button></form></div></div></section>
+<section id="dashboard" class="hidden"><h1>Dein Profil & Website-Studio</h1><div id="notice" class="notice hidden"></div><div class="grid"><section class="card"><h2>Profil bearbeiten</h2><form id="profile"><label>Anzeigename</label><input name="display_name" maxlength="120"><label>Biografie</label><textarea name="bio" rows="3" maxlength="1000"></textarea><label>Avatar-URL (optional)</label><input name="avatar_url" type="url" maxlength="500"><button>Profil speichern</button></form></section>
+<section class="card"><h2>Neue Website eintragen</h2><form id="project"><label>Name</label><input name="name" maxlength="120" required><label>Adresse (HTTPS)</label><input name="url" type="url" placeholder="https://deine-website.de" required><label>Kategorie</label><select name="category"><option>Website</option><option>KI & Technologie</option><option>Shop</option><option>Community</option><option>Kreativprojekt</option><option>Sonstiges</option></select><label>Beschreibung</label><textarea name="description" rows="3" maxlength="2000"></textarea><button>Website speichern</button></form></section></div>
+<section class="card"><h2>Meine Websites</h2><p class="muted">Bearbeite deine Einträge und veröffentliche sie im öffentlichen ULTIMA-Verzeichnis.</p><div id="mine"></div></section>
+<section class="card"><h2>Öffentliches Website-Verzeichnis</h2><div id="public"></div></section></section>
+<script>
+const API="";let token=sessionStorage.getItem("ultima_global_token")||"";let me=null;
+const $=id=>document.getElementById(id);
+function note(msg){$("notice").textContent=msg;$("notice").classList.remove("hidden")}
+async function api(path,method="GET",body){const r=await fetch(API+path,{method,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},...(body?{body:JSON.stringify(body)}:{})});const data=await r.json().catch(()=>({error:"Ungültige Serverantwort"}));if(!r.ok)throw new Error(data.error||"Anfrage fehlgeschlagen");return data}
+function formData(form){return Object.fromEntries(new FormData(form).entries())}
+function safeText(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function projectCard(p,editable){return '<article class="project"><div class="row"><b>'+safeText(p.name)+'</b><span class="status">'+safeText(p.status)+'</span></div><p>'+safeText(p.description)+'</p><p><a href="'+safeText(p.url)+'" target="_blank" rel="noopener noreferrer">'+safeText(p.url)+'</a></p><small>'+safeText(p.category)+'</small>'+(editable?'<div class="row" style="margin-top:12px"><button class="secondary" data-edit="'+p.id+'">Bearbeiten</button><button data-publish="'+p.id+'">'+(p.is_public?'Veröffentlichung aufheben':'Veröffentlichen')+'</button><button class="secondary" data-delete="'+p.id+'">Archivieren</button></div>':'')+'</article>'}
+async function refresh(){const data=await api("/api/global/me");me=data.user; $("auth").classList.add("hidden");$("dashboard").classList.remove("hidden");$("logout").classList.remove("hidden");$("profile").elements.display_name.value=me.display_name||"";$("profile").elements.bio.value=me.bio||"";$("profile").elements.avatar_url.value=me.avatar_url||"";const mine=await api("/api/global/projects");$("mine").innerHTML=mine.projects.length?mine.projects.map(p=>projectCard(p,true)).join(""):"<p class='muted'>Noch keine Websites eingetragen.</p>";const pub=await api("/api/global/public-projects");$("public").innerHTML=pub.projects.length?pub.projects.map(p=>projectCard(p,false)).join(""):"<p class='muted'>Noch keine öffentlichen Websites.</p>"}
+async function authSubmit(form,path){try{const data=await api(path,"POST",formData(form));token=data.token;sessionStorage.setItem("ultima_global_token",token);form.reset();await refresh();note("Willkommen bei ULTIMA.")}catch(e){alert(e.message)}}
+$("register").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/register")};
+$("login").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/login")};
+$("profile").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/profile","PATCH",formData(e.target));note("Profil gespeichert.")}catch(err){alert(err.message)}};
+$("project").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/projects","POST",formData(e.target));e.target.reset();await refresh();note("Website wurde eingetragen. Du kannst sie jetzt veröffentlichen.")}catch(err){alert(err.message)}};
+$("mine").onclick=async e=>{const pub=e.target.dataset.publish,edit=e.target.dataset.edit,del=e.target.dataset.delete;try{if(pub){const p=(await api("/api/global/projects")).projects.find(x=>x.id==pub);await api("/api/global/projects/"+pub,"PATCH",{is_public:!p.is_public});await refresh();note("Veröffentlichungsstatus aktualisiert.")}else if(del){await api("/api/global/projects/"+del,"DELETE");await refresh();note("Website archiviert.")}else if(edit){const p=(await api("/api/global/projects")).projects.find(x=>x.id==edit);const name=prompt("Name",p.name);if(name===null)return;const url=prompt("HTTPS-Adresse",p.url);if(url===null)return;const description=prompt("Beschreibung",p.description);if(description===null)return;await api("/api/global/projects/"+edit,"PATCH",{name,url,description});await refresh();note("Website aktualisiert.")}}catch(err){alert(err.message)}};
+$("logout").onclick=()=>{token="";sessionStorage.removeItem("ultima_global_token");$("dashboard").classList.add("hidden");$("auth").classList.remove("hidden");$("logout").classList.add("hidden")};
+if(token)refresh().catch(()=>{token="";sessionStorage.removeItem("ultima_global_token")});
+</script></main></html>"""
+
+@app.get("/portal")
+def global_portal():
+    return render_template_string(GLOBAL_PORTAL_HTML)
+
+@app.post("/api/global/register")
+@limiter.limit("5 per hour")
+def global_register():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip().lower()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    display_name = str(data.get("display_name", username)).strip()[:120]
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 255:
+        return jsonify(error="Bitte eine gültige E-Mail-Adresse eingeben."), 400
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
+        return jsonify(error="Benutzername: 3–32 Zeichen, Buchstaben, Zahlen, Punkt, _ oder -."), 400
+    if len(password) < 12 or len(password) > 128:
+        return jsonify(error="Das Passwort muss 12 bis 128 Zeichen lang sein."), 400
+    if GlobalUser.query.filter(func.lower(GlobalUser.email) == email).first():
+        return jsonify(error="Diese E-Mail ist bereits registriert."), 409
+    if GlobalUser.query.filter(func.lower(GlobalUser.username) == username.lower()).first():
+        return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
+    role = "owner" if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL else "member"
+    user = GlobalUser(email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=display_name, role=role)
+    db.session.add(user)
+    db.session.commit()
+    audit("global:" + email, "global.register", None, str(user.id))
+    return jsonify(ok=True, token=issue_global_token(user), user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "role": user.role}), 201
+
+@app.post("/api/global/login")
+@limiter.limit("10 per 15 minutes")
+def global_login():
+    data = request.get_json(silent=True) or {}
+    identity = str(data.get("identity", "")).strip()
+    password = str(data.get("password", ""))
+    user = GlobalUser.query.filter(func.lower(GlobalUser.email) == identity.lower()).first()
+    if not user:
+        user = GlobalUser.query.filter(func.lower(GlobalUser.username) == identity.lower()).first()
+    if not user or user.status != "active" or not check_password_hash(user.password_hash, password):
+        return jsonify(error="Anmeldedaten ungültig oder Konto gesperrt."), 401
+    audit("global:" + user.email, "global.login", None, str(user.id))
+    return jsonify(ok=True, token=issue_global_token(user), user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "role": user.role})
+
+@app.get("/api/global/me")
+def global_me():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    return jsonify(user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "bio": user.bio, "avatar_url": user.avatar_url, "role": user.role, "created_at": user.created_at.isoformat()})
+
+@app.patch("/api/global/profile")
+def global_profile_update():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    if "display_name" in data:
+        user.display_name = str(data["display_name"]).strip()[:120]
+    if "bio" in data:
+        user.bio = str(data["bio"]).strip()[:1000]
+    if "avatar_url" in data:
+        avatar = str(data["avatar_url"]).strip()
+        if avatar and not clean_project_url(avatar):
+            return jsonify(error="Avatar muss eine gültige HTTPS-Adresse sein."), 400
+        user.avatar_url = avatar[:500]
+    db.session.commit()
+    audit("global:" + user.email, "global.profile.update", None, str(user.id))
+    return jsonify(ok=True)
+
+@app.get("/api/global/projects")
+def global_projects_list():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    projects = WebsiteProject.query.filter_by(owner_id=user.id).order_by(WebsiteProject.updated_at.desc()).all()
+    return jsonify(projects=[project_payload(p) for p in projects])
+
+@app.post("/api/global/projects")
+@limiter.limit("20 per hour")
+def global_projects_create():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()[:120]
+    url = clean_project_url(data.get("url"))
+    description = str(data.get("description", "")).strip()[:2000]
+    category = str(data.get("category", "Website")).strip()[:60] or "Website"
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:54]
+    if len(name) < 3 or not url or len(slug) < 3:
+        return jsonify(error="Bitte einen Namen (mindestens 3 Zeichen) und eine gültige HTTPS-Adresse angeben."), 400
+    base, suffix = slug, 2
+    while WebsiteProject.query.filter_by(slug=slug).first():
+        slug = f"{base[:58]}-{suffix}"
+        suffix += 1
+    project = WebsiteProject(owner_id=user.id, name=name, slug=slug, url=url, description=description, category=category, status="draft", is_public=False)
+    db.session.add(project)
+    db.session.commit()
+    audit("global:" + user.email, "project.create", slug, url)
+    return jsonify(ok=True, project=project_payload(project)), 201
+
+@app.patch("/api/global/projects/<int:project_id>")
+def global_projects_update(project_id):
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    project = WebsiteProject.query.filter_by(id=project_id, owner_id=user.id).first()
+    if not project:
+        return jsonify(error="Website nicht gefunden."), 404
+    data = request.get_json(silent=True) or {}
+    if "name" in data:
+        name = str(data["name"]).strip()[:120]
+        if len(name) < 3:
+            return jsonify(error="Der Name muss mindestens 3 Zeichen lang sein."), 400
+        project.name = name
+    if "url" in data:
+        url = clean_project_url(data["url"])
+        if not url:
+            return jsonify(error="Bitte eine gültige HTTPS-Adresse angeben."), 400
+        project.url = url
+    if "description" in data:
+        project.description = str(data["description"]).strip()[:2000]
+    if "category" in data:
+        project.category = str(data["category"]).strip()[:60] or "Website"
+    if "is_public" in data:
+        project.is_public = bool(data["is_public"])
+        project.status = "published" if project.is_public else "draft"
+    db.session.commit()
+    audit("global:" + user.email, "project.update", project.slug, str(project.id))
+    return jsonify(ok=True, project=project_payload(project))
+
+@app.delete("/api/global/projects/<int:project_id>")
+def global_projects_archive(project_id):
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    project = WebsiteProject.query.filter_by(id=project_id, owner_id=user.id).first()
+    if not project:
+        return jsonify(error="Website nicht gefunden."), 404
+    project.status = "archived"
+    project.is_public = False
+    db.session.commit()
+    audit("global:" + user.email, "project.archive", project.slug, str(project.id))
+    return jsonify(ok=True)
+
+@app.get("/api/global/public-projects")
+def global_public_projects():
+    projects = WebsiteProject.query.filter_by(is_public=True, status="published").order_by(WebsiteProject.updated_at.desc()).limit(500).all()
+    return jsonify(projects=[{"id": p.id, "name": p.name, "url": p.url, "description": p.description, "category": p.category, "owner": p.owner.display_name or p.owner.username} for p in projects])
+
+@app.get("/admin/website-projects")
+@admin_required
+def admin_website_projects():
+    projects = WebsiteProject.query.order_by(WebsiteProject.updated_at.desc()).limit(500).all()
+    return render_template_string("""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><body style="background:#080b14;color:#edf1ff;font:15px system-ui;padding:24px"><h1>ULTIMA · Website-Projekte</h1><p><a href="/admin">← Control Center</a></p>{% for p in projects %}<section style="padding:16px;margin:12px 0;background:#11182a;border:1px solid #26304a;border-radius:12px"><b>{{p.name}}</b> · {{p.status}} · {{p.owner.email}}<p>{{p.url}}</p><p>{{p.description}}</p><form method="post" action="/admin/website-projects/{{p.id}}"><input type="hidden" name="csrf" value="{{csrf}}"><button name="action" value="publish">Veröffentlichen</button><button name="action" value="hide">Ausblenden</button><button name="action" value="archive">Archivieren</button></form></section>{% endfor %}</body>""", projects=projects, csrf=session["csrf"])
+
+@app.post("/admin/website-projects/<int:project_id>")
+@admin_required
+def admin_website_project_action(project_id):
+    if not admin_csrf_ok():
+        abort(400)
+    project = db.session.get(WebsiteProject, project_id)
+    if not project:
+        abort(404)
+    action = request.form.get("action")
+    if action == "publish":
+        project.is_public = True
+        project.status = "published"
+    elif action == "hide":
+        project.is_public = False
+        project.status = "draft"
+    elif action == "archive":
+        project.is_public = False
+        project.status = "archived"
+    else:
+        abort(400)
+    db.session.commit()
+    audit("admin", "project." + action, project.slug, str(project.id))
+    return redirect(url_for("admin_website_projects"))
+
 
 @app.get("/admin/login")
 def admin_login():
