@@ -115,8 +115,8 @@
     "slug": "rea-signature",
     "name": "Rea Signature",
     "origin": "https://rea-signature.onrender.com",
-    "is_active": false,
-    "membership_enabled": false
+    "is_active": true,
+    "membership_enabled": true
   },
   {
     "slug": "quantum-ai-one",
@@ -257,5 +257,33 @@
     "origin": "https://ultima-unify-45ne.onrender.com",
     "is_active": true,
     "membership_enabled": false
+  },
+  {
+    "slug": "neuroforge",
+    "name": "NeuroForge Systems",
+    "origin": "https://neuroforge-2035.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
+  },
+  {
+    "slug": "aurelis-creative-ai-studio",
+    "name": "Aurelis Creative AI Studio",
+    "origin": "https://aurelis-creative-ai-studio.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
+  },
+  {
+    "slug": "ate-rea-characterverse",
+    "name": "Ate Rea CharacterVerse",
+    "origin": "https://ate-rea-characterverse.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
+  },
+  {
+    "slug": "ionos-7-gauss-portal",
+    "name": "IONOS-7 MasterCat Portal",
+    "origin": "https://ionos-7-gauss-portal.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   }
 ]
