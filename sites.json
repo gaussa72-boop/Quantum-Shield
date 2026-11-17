@@ -285,5 +285,19 @@
     "origin": "https://ionos-7-gauss-portal.onrender.com",
     "is_active": true,
     "membership_enabled": true
+  },
+  {
+    "slug": "neuroforge-gaussa-2035",
+    "name": "NeuroForge Systems",
+    "origin": "https://neuroforge-gaussa-2035.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
+  },
+  {
+    "slug": "galactic-ai-v3-app",
+    "name": "Galactic AI",
+    "origin": "https://galactic-ai-v3-app.onrender.com",
+    "is_active": true,
+    "membership_enabled": true
   }
 ]
