@@ -243,5 +243,19 @@
     "origin": "https://lichtkrieger-cloud-gaming.onrender.com",
     "is_active": true,
     "membership_enabled": true
+  },
+  {
+    "slug": "ultima-central-portal",
+    "name": "ULTIMA Central Public Portal",
+    "origin": "https://ultima-central-45ne.onrender.com",
+    "is_active": true,
+    "membership_enabled": false
+  },
+  {
+    "slug": "ultima-unify-portal",
+    "name": "ULTIMA Unify Account Hub",
+    "origin": "https://ultima-unify-45ne.onrender.com",
+    "is_active": true,
+    "membership_enabled": false
   }
 ]
