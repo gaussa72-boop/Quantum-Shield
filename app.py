@@ -1030,10 +1030,18 @@ def global_sso_exchange():
             tail = "-" + str(suffix)
             username = base[:32-len(tail)] + tail
             suffix += 1
+        is_owner = user.role == "owner" or (ADMIN_OWNER_EMAIL and user.email.lower() == ADMIN_OWNER_EMAIL)
         member = Member(site_id=site.id, email=user.email, username=username,
             password_hash=generate_password_hash(secrets.token_urlsafe(32), method="scrypt"),
-            display_name=user.display_name or user.username, role="member", status="active")
+            display_name=user.display_name or user.username,
+            role="superadmin" if is_owner else "member", status="active",
+            is_lifetime_premium=bool(is_owner or (PREMIUM_OWNER_EMAIL and user.email.lower() == PREMIUM_OWNER_EMAIL)))
         db.session.add(member)
+    elif user.role == "owner" or (ADMIN_OWNER_EMAIL and user.email.lower() == ADMIN_OWNER_EMAIL):
+        member.role = "superadmin"
+        member.status = "active"
+        member.is_lifetime_premium = True
+        member.token_version += 1
     code.used_at = now
     db.session.commit()
     audit("global:" + user.email, "global.sso.exchange", site.slug, str(member.id))
@@ -1469,12 +1477,35 @@ with app.app_context():
                     registered.membership_enabled = item.get("membership_enabled", True)
                     registered.is_active = item.get("is_active", registered.is_active)
         db.session.commit()
-    # New sites start without an integration secret; an admin issues one explicitly.
+    # ULTIMA owner synchronization: the configured owner mailbox is the
+    # single master identity across the central portal and all enabled sites.
     if PREMIUM_OWNER_EMAIL:
-        Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update({"is_lifetime_premium": True}, synchronize_session=False)
+        Member.query.filter(func.lower(Member.email) == PREMIUM_OWNER_EMAIL).update(
+            {"is_lifetime_premium": True}, synchronize_session=False
+        )
     if ADMIN_OWNER_EMAIL:
-        Member.query.filter(func.lower(Member.email) == ADMIN_OWNER_EMAIL).update({"role": "superadmin", "is_lifetime_premium": True}, synchronize_session=False)
-    db.session.commit()
+        owner_member_query = Member.query.filter(func.lower(Member.email) == ADMIN_OWNER_EMAIL)
+        owner_member_query.update(
+            {"role": "superadmin", "status": "active", "is_lifetime_premium": True,
+             "token_version": Member.token_version + 1},
+            synchronize_session=False
+        )
+        global_owner = GlobalUser.query.filter(func.lower(GlobalUser.email) == ADMIN_OWNER_EMAIL).first()
+        if global_owner:
+            global_owner.role = "owner"
+            global_owner.status = "active"
+            admin_owner = Admin.query.filter(func.lower(Admin.email) == ADMIN_OWNER_EMAIL).first()
+            if not admin_owner:
+                # Reuse the same scrypt hash: no new password is generated or exposed.
+                admin_owner = Admin(email=global_owner.email, password_hash=global_owner.password_hash, role="superadmin")
+                db.session.add(admin_owner)
+            else:
+                admin_owner.role = "superadmin"
+        else:
+            admin_owner = Admin.query.filter(func.lower(Admin.email) == ADMIN_OWNER_EMAIL).first()
+            if admin_owner:
+                admin_owner.role = "superadmin"
+        db.session.commit()
 
 
 class CyberShieldScan(db.Model):
