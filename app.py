@@ -1259,7 +1259,14 @@ async function refreshPremium(){
  }catch(e){statusRoot.textContent="Premium-Status nicht erreichbar: "+e.message}
 }
 async function refresh(){const data=await api("/api/global/me");me=data.user; $("auth").classList.add("hidden");$("dashboard").classList.remove("hidden");$("logout").classList.remove("hidden");$("profile").elements.display_name.value=me.display_name||"";$("profile").elements.bio.value=me.bio||"";$("profile").elements.avatar_url.value=me.avatar_url||"";const mine=await api("/api/global/projects");$("mine").innerHTML=mine.projects.length?mine.projects.map(p=>projectCard(p,true)).join(""):"<p class='muted'>Noch keine Websites eingetragen.</p>";const pub=await api("/api/global/public-projects");$("public").innerHTML=pub.projects.length?pub.projects.map(p=>projectCard(p,false)).join(""):"<p class='muted'>Noch keine öffentlichen Websites.</p>";await refreshPremium()}
-async function authSubmit(form,path){try{const data=await api(path,"POST",formData(form));token=data.token;sessionStorage.setItem("ultima_global_token",token);form.reset();await refresh();note("Willkommen bei ULTIMA.")}catch(e){alert(e.message)}}
+async function maybeSsoRedirect(){
+ const siteSlug=new URLSearchParams(location.search).get("site");
+ if(!siteSlug||!token)return false;
+ const d=await api("/api/global/sso/issue/"+encodeURIComponent(siteSlug),"POST",{});
+ if(!d.redirect_url)throw new Error("Single Sign-on konnte für diese Website nicht erstellt werden.");
+ location.replace(d.redirect_url);return true;
+}
+async function authSubmit(form,path){try{const data=await api(path,"POST",formData(form));token=data.token;sessionStorage.setItem("ultima_global_token",token);form.reset();await refresh();if(await maybeSsoRedirect())return;note("Willkommen bei ULTIMA.")}catch(e){alert(e.message)}}
 $("register").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/register")};
 $("login").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/login")};
 $("profile").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/profile","PATCH",formData(e.target));note("Profil gespeichert.")}catch(err){alert(err.message)}};
@@ -1267,7 +1274,7 @@ $("project").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/pr
 $("mine").onclick=async e=>{const sso=e.target.dataset.sso,pub=e.target.dataset.publish,edit=e.target.dataset.edit,del=e.target.dataset.delete;try{if(sso){const d=await api("/api/global/sso/issue/"+encodeURIComponent(sso),"POST",{});location.href=d.redirect_url}else if(pub){const p=(await api("/api/global/projects")).projects.find(x=>x.id==pub);await api("/api/global/projects/"+pub,"PATCH",{is_public:!p.is_public});await refresh();note("Veröffentlichungsstatus aktualisiert.")}else if(del){await api("/api/global/projects/"+del,"DELETE");await refresh();note("Website archiviert.")}else if(edit){const p=(await api("/api/global/projects")).projects.find(x=>x.id==edit);const name=prompt("Name",p.name);if(name===null)return;const url=prompt("HTTPS-Adresse",p.url);if(url===null)return;const description=prompt("Beschreibung",p.description);if(description===null)return;await api("/api/global/projects/"+edit,"PATCH",{name,url,description});await refresh();note("Website aktualisiert.")}}catch(err){alert(err.message)}};
 $("public").onclick=async e=>{const slug=e.target.dataset.sso;if(!slug)return;try{const d=await api("/api/global/sso/issue/"+encodeURIComponent(slug),"POST",{});location.href=d.redirect_url}catch(err){alert(err.message)}};
 $("logout").onclick=()=>{token="";sessionStorage.removeItem("ultima_global_token");$("dashboard").classList.add("hidden");$("auth").classList.remove("hidden");$("logout").classList.add("hidden")};
-if(token)refresh().catch(()=>{token="";sessionStorage.removeItem("ultima_global_token")});
+if(token)refresh().then(()=>maybeSsoRedirect()).catch(e=>{token="";sessionStorage.removeItem("ultima_global_token");if(new URLSearchParams(location.search).get("site"))note(e.message)});
 </script></main></html>"""
 
 @app.get("/portal")
