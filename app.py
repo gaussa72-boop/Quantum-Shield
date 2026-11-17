@@ -1423,6 +1423,78 @@ def global_public_projects():
     return jsonify(projects=[{"id": p.id, "name": p.name, "slug": p.slug, "url": p.url, "description": p.description, "category": p.category, "owner": p.owner.display_name or p.owner.username, "status": p.status} for p in projects])
 
 
+@app.get("/api/global/premium/status")
+def global_premium_status():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    status = premium_status_payload(user.email)
+    invoices = NetworkPremiumInvoice.query.filter(func.lower(NetworkPremiumInvoice.email) == user.email.lower()).order_by(NetworkPremiumInvoice.created_at.desc()).limit(10).all()
+    status["invoices"] = [premium_invoice_payload(x) for x in invoices]
+    return jsonify(premium=status)
+
+@app.post("/api/global/premium/trial/start")
+@limiter.limit("3 per hour")
+def global_premium_start_trial():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    return jsonify(ok=True,premium=premium_status_payload(user.email,start_trial=True))
+
+@app.get("/api/global/premium/invoices")
+def global_premium_invoices():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    rows = NetworkPremiumInvoice.query.filter(func.lower(NetworkPremiumInvoice.email) == user.email.lower()).order_by(NetworkPremiumInvoice.created_at.desc()).limit(20).all()
+    return jsonify(invoices=[premium_invoice_payload(x) for x in rows])
+
+@app.post("/api/global/premium/invoices")
+@limiter.limit("3 per hour")
+def global_premium_invoice_create():
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    try:
+        invoice = create_network_premium_invoice(user.email, "ultima-network")
+    except Exception as exc:
+        app.logger.warning("Global premium invoice creation unavailable: %s", type(exc).__name__)
+        return jsonify(error=str(exc)[:300]), 503
+    return jsonify(ok=True,invoice=invoice),201
+
+@app.post("/api/global/premium/invoices/<invoice_code>/submit")
+@limiter.limit("10 per hour")
+def global_premium_invoice_submit(invoice_code):
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    invoice = NetworkPremiumInvoice.query.filter_by(invoice_code=invoice_code,email=user.email.lower()).first()
+    if not invoice:
+        return jsonify(error="Premium-Rechnung nicht gefunden."),404
+    if invoice.status == "paid":
+        return jsonify(ok=True,result={"status":"paid","paid_until":invoice.paid_until.isoformat() if invoice.paid_until else None})
+    if invoice.expires_at <= datetime.now(timezone.utc) and not invoice.txid:
+        invoice.status="expired";db.session.commit()
+        return jsonify(error="Diese Rechnung ist abgelaufen. Bitte eine neue Rechnung erstellen."),410
+    data=request.get_json(silent=True) or {}
+    try:
+        result=verify_network_premium_invoice(invoice,data.get("txid"))
+    except Exception as exc:
+        app.logger.info("Global premium TXID verification rejected: %s",type(exc).__name__)
+        return jsonify(error=str(exc)[:300]),400
+    return jsonify(ok=True,result=result,premium=premium_status_payload(user.email))
+
+@app.post("/api/global/premium/cancel")
+def global_premium_cancel():
+    user=current_global_user()
+    if not user:
+        return jsonify(error="Anmeldung erforderlich."),401
+    account=premium_account_for(user.email)
+    account.renewal_disabled=True
+    db.session.commit()
+    return jsonify(ok=True,paid_until=account.paid_until.isoformat() if account.paid_until else None,
+        message="Es gibt keine automatische Wallet-Abbuchung. Dein vorausbezahlter Zugang bleibt bis zum Ablauf aktiv.")
+
 @app.post("/api/global/sso/issue/<slug>")
 @limiter.limit("20 per hour")
 def global_sso_issue(slug):
