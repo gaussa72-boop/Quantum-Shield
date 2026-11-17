@@ -836,11 +836,16 @@ def member_copilot(slug):
                     safe_history.append({"role": item["role"], "content": content})
     base_url = os.getenv("ULTIMA_AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.getenv("ULTIMA_AI_MODEL", "gpt-4.1-mini")
+    usage_id = "copilot-" + secrets.token_urlsafe(18)
+    allowed, entitlement = premium_reserve_usage(member.email, site.slug, "ai_generation", usage_id)
+    if not allowed:
+        return jsonify(error=entitlement.get("error"), premium=entitlement, upgrade_url="/portal"), 402
     system_prompt = (
         "Du bist ULTIMA Copilot, ein hilfreicher Assistent innerhalb einer Website. "
         "Antworte in der Sprache des Mitglieds, standardmäßig Deutsch. "
         "Website: " + site.name + " (" + site.slug + "). "
-        "Mitgliedsrolle: " + member.role + ". Premium: " + ("ja" if member.is_lifetime_premium else "nein") + ". "
+        "Mitgliedsrolle: " + member.role + ". "
+        "Behalte den individuellen Charakter und die Fachdomäne dieser Website bei. "
         "Hilf bei Navigation, Profil, Mitgliedschaft, Shop, Inhalten, Ideen, Website-Bedienung, "
         "Fehlersuche und Planung. Behaupte niemals, du hättest etwas veröffentlicht, gekauft, geändert "
         "oder deployed, wenn keine entsprechende bestätigte Aktion ausgeführt wurde. "
@@ -857,10 +862,13 @@ def member_copilot(slug):
         answer = result.get("choices", [{}])[0].get("message", {}).get("content", "")
         if not answer:
             raise ValueError("Leere KI-Antwort")
-        return jsonify(ok=True, answer=str(answer)[:8000], model=model, site=site.slug)
+        premium_complete_usage(member.email, usage_id)
+        return jsonify(ok=True, answer=str(answer)[:8000], model=model, site=site.slug,
+                        premium=entitlement, request_id=usage_id)
     except Exception as exc:
+        premium_refund_usage(member.email, usage_id)
         app.logger.warning("Copilot provider request failed: %s", type(exc).__name__)
-        return jsonify(error="Der KI-Dienst ist momentan nicht erreichbar. Bitte später erneut versuchen."), 502
+        return jsonify(error="Der KI-Dienst ist momentan nicht erreichbar. Deine Premium-Testnutzung wurde zurückerstattet."), 502
 
 @app.patch("/api/<slug>/profile")
 def update_profile(slug):
@@ -896,7 +904,7 @@ def credit_balance(slug):
         return jsonify(error="Webseite nicht gefunden."), 404
     if not member:
         return jsonify(error="Anmeldung erforderlich."), 401
-    return jsonify(balance=member.credit_balance, currency="USD", credit_value="1 credit = 1 USD", prices=GENERATION_PRICES, wallet=BTC_ADDRESS, network=BTC_NETWORK, payment_enabled=bool(BTC_ADDRESS) and CRYPTO_TOPUPS_ENABLED)
+    return jsonify(balance=member.credit_balance, currency="USD", credit_value="1 credit = 1 USD", prices=GENERATION_PRICES, wallet=BTC_ADDRESS, network=BTC_NETWORK, payment_enabled=bool(BTC_ADDRESS) and CRYPTO_TOPUPS_ENABLED, premium=premium_status_payload(member.email))
 
 @app.get("/api/<slug>/credits/history")
 def credit_history(slug):
@@ -949,14 +957,22 @@ def consume_credits(slug):
     existing = CreditLedger.query.filter_by(site_id=site.id, member_id=member.id, reference=reference).first()
     if existing:
         return jsonify(ok=True, already_charged=True, charged=abs(min(existing.delta, 0)), balance=member.credit_balance)
-    if member.is_lifetime_premium:
+    # The unified network subscription supersedes isolated per-site credit balances.
+    # The client normally reserves usage before generation; legacy integrations are
+    # still gated here so an expired trial cannot use a hidden credit-balance bypass.
+    if member.is_lifetime_premium or (ADMIN_OWNER_EMAIL and member.email.lower() == ADMIN_OWNER_EMAIL):
         return jsonify(ok=True, charged=0, balance=member.credit_balance, premium=True)
-    if member.credit_balance < cost:
-        return jsonify(error="Nicht genügend Credits.", required=cost, balance=member.credit_balance, upgrade_url="/credits"), 402
-    member.credit_balance -= cost
-    db.session.add(CreditLedger(site_id=site.id, member_id=member.id, delta=-cost, balance_after=member.credit_balance, reason=feature, reference=reference))
-    db.session.commit()
-    return jsonify(ok=True, charged=cost, balance=member.credit_balance)
+    prior_usage = NetworkPremiumUsage.query.filter_by(request_id=request_id, email=member.email.lower()).first()
+    if prior_usage and prior_usage.state in {"reserved","used"}:
+        if prior_usage.state == "reserved":
+            prior_usage.state = "used"
+            db.session.commit()
+        return jsonify(ok=True, charged=0, balance=member.credit_balance, premium=True, trial=prior_usage.trial_charge)
+    allowed, entitlement = premium_reserve_usage(member.email, site.slug, feature, request_id)
+    if not allowed:
+        return jsonify(error=entitlement.get("error"), premium=entitlement, required=cost, balance=member.credit_balance, upgrade_url="/portal"), 402
+    premium_complete_usage(member.email, request_id)
+    return jsonify(ok=True, charged=0, balance=member.credit_balance, premium=True, trial=bool(entitlement.get("trial")))
 
 @app.post("/admin/payment/<int:payment_id>/<action>")
 @admin_required
