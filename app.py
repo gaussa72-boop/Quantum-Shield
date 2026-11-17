@@ -831,6 +831,22 @@ def global_register():
     role = "owner" if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL else "member"
     user = GlobalUser(email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=display_name, role=role)
     db.session.add(user)
+    db.session.flush()
+    if role == "owner":
+        registry_path = os.path.join(os.path.dirname(__file__), "sites.json")
+        excluded = ("lyca", "bullrun", "roth", "royal-palace", "business-real-estate")
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as registry_file:
+                for item in json.load(registry_file):
+                    slug = str(item.get("slug", "")).lower()
+                    if not item.get("is_active", True) or not item.get("membership_enabled", True) or any(term in slug for term in excluded):
+                        continue
+                    project_url = clean_project_url(item.get("origin"))
+                    if not project_url or WebsiteProject.query.filter_by(slug=slug).first():
+                        continue
+                    db.session.add(WebsiteProject(owner_id=user.id, name=str(item.get("name", slug))[:120], slug=slug,
+                        url=project_url, description="Aus dem bestehenden ULTIMA-Website-Verzeichnis übernommen.",
+                        category="Website", status="draft", is_public=False))
     db.session.commit()
     audit("global:" + email, "global.register", None, str(user.id))
     return jsonify(ok=True, token=issue_global_token(user), user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "role": user.role}), 201
