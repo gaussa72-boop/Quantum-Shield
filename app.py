@@ -694,6 +694,119 @@ def me(slug):
     return jsonify(member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "bio": member.bio, "avatar_url": member.avatar_url, "role": member.role, "created_at": member.created_at.isoformat(), "is_lifetime_premium": member.is_lifetime_premium})
 
 
+@app.get("/api/<slug>/premium/status")
+def site_premium_status(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    status = premium_status_payload(member.email)
+    invoices = NetworkPremiumInvoice.query.filter(func.lower(NetworkPremiumInvoice.email) == member.email.lower()).order_by(NetworkPremiumInvoice.created_at.desc()).limit(5).all()
+    status["invoices"] = [premium_invoice_payload(x) for x in invoices]
+    return jsonify(premium=status)
+
+@app.post("/api/<slug>/premium/trial/start")
+@limiter.limit("3 per hour")
+def site_premium_start_trial(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    status = premium_status_payload(member.email, start_trial=True)
+    return jsonify(ok=True, premium=status)
+
+@app.post("/api/<slug>/premium/authorize")
+@limiter.limit("120 per hour")
+def site_premium_authorize(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    if member.status != "active":
+        return jsonify(error="Dein Konto ist noch nicht freigegeben."), 403
+    data = request.get_json(silent=True) or {}
+    feature = str(data.get("feature", "ai_generation"))[:64]
+    request_id = str(data.get("request_id", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", request_id):
+        return jsonify(error="Ungültige request_id."), 400
+    allowed, detail = premium_reserve_usage(member.email, site.slug, feature, request_id)
+    if not allowed:
+        return jsonify(ok=False, premium=detail, error=detail.get("error","Premium-Nutzungslimit erreicht.")), 402
+    return jsonify(ok=True, premium=detail)
+
+@app.post("/api/<slug>/premium/complete")
+def site_premium_complete(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    request_id = str(data.get("request_id", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", request_id):
+        return jsonify(error="Ungültige request_id."), 400
+    return jsonify(ok=premium_complete_usage(member.email, request_id))
+
+@app.post("/api/<slug>/premium/refund")
+def site_premium_refund(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    request_id = str(data.get("request_id", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", request_id):
+        return jsonify(error="Ungültige request_id."), 400
+    return jsonify(ok=premium_refund_usage(member.email, request_id))
+
+@app.get("/api/<slug>/premium/invoices")
+def site_premium_invoices(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    rows = NetworkPremiumInvoice.query.filter(func.lower(NetworkPremiumInvoice.email) == member.email.lower()).order_by(NetworkPremiumInvoice.created_at.desc()).limit(20).all()
+    return jsonify(invoices=[premium_invoice_payload(x) for x in rows])
+
+@app.post("/api/<slug>/premium/invoices")
+@limiter.limit("3 per hour")
+def site_premium_invoice_create(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    try:
+        invoice = create_network_premium_invoice(member.email, site.slug)
+    except Exception as exc:
+        app.logger.warning("Premium invoice creation unavailable: %s", type(exc).__name__)
+        return jsonify(error=str(exc)[:300]), 503
+    return jsonify(ok=True, invoice=invoice), 201
+
+@app.post("/api/<slug>/premium/invoices/<invoice_code>/submit")
+@limiter.limit("10 per hour")
+def site_premium_invoice_submit(slug, invoice_code):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    invoice = NetworkPremiumInvoice.query.filter_by(invoice_code=invoice_code, email=member.email.lower()).first()
+    if not invoice:
+        return jsonify(error="Premium-Rechnung nicht gefunden."), 404
+    if invoice.status == "paid":
+        return jsonify(ok=True, result={"status":"paid","paid_until":invoice.paid_until.isoformat() if invoice.paid_until else None})
+    if invoice.expires_at <= datetime.now(timezone.utc) and not invoice.txid:
+        invoice.status = "expired"; db.session.commit()
+        return jsonify(error="Diese Rechnung ist abgelaufen. Bitte eine neue Rechnung erstellen."), 410
+    data = request.get_json(silent=True) or {}
+    try:
+        result = verify_network_premium_invoice(invoice, data.get("txid"))
+    except Exception as exc:
+        app.logger.info("Premium TXID verification rejected: %s", type(exc).__name__)
+        return jsonify(error=str(exc)[:300]), 400
+    return jsonify(ok=True, result=result, premium=premium_status_payload(member.email))
+
+@app.post("/api/<slug>/premium/cancel")
+def site_premium_cancel(slug):
+    site, member = current_member(slug)
+    if not site or not member:
+        return jsonify(error="Anmeldung erforderlich."), 401
+    account = premium_account_for(member.email)
+    account.renewal_disabled = True
+    db.session.commit()
+    return jsonify(ok=True, paid_until=account.paid_until.isoformat() if account.paid_until else None,
+                   message="Es gibt keine automatische Wallet-Abbuchung. Dein vorausbezahlter Zugang bleibt bis zum Ablauf aktiv.")
+
 @app.post("/api/<slug>/copilot")
 @limiter.limit("20 per hour")
 def member_copilot(slug):
