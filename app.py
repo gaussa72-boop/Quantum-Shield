@@ -217,6 +217,7 @@ class GlobalSSOCode(db.Model):
 
 class NetworkPremiumAccount(db.Model):
     __tablename__ = "network_premium_account"
+    __table_args__ = {"extend_existing": True}
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     trial_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -230,6 +231,7 @@ class NetworkPremiumAccount(db.Model):
 
 class NetworkPremiumUsage(db.Model):
     __tablename__ = "network_premium_usage"
+    __table_args__ = {"extend_existing": True}
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), nullable=False, index=True)
     site_slug = db.Column(db.String(64), nullable=False, index=True)
@@ -241,6 +243,7 @@ class NetworkPremiumUsage(db.Model):
 
 class NetworkPremiumInvoice(db.Model):
     __tablename__ = "network_premium_invoice"
+    __table_args__ = {"extend_existing": True}
     id = db.Column(db.Integer, primary_key=True)
     invoice_code = db.Column(db.String(64), unique=True, nullable=False, index=True)
     email = db.Column(db.String(255), nullable=False, index=True)
