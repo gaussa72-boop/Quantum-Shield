@@ -197,6 +197,17 @@ class WebsiteProject(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     owner = db.relationship("GlobalUser", backref=db.backref("website_projects", lazy=True, cascade="all, delete-orphan"))
 
+
+class GlobalSSOCode(db.Model):
+    __tablename__ = "global_sso_code"
+    id = db.Column(db.Integer, primary_key=True)
+    code_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    site_id = db.Column(db.Integer, db.ForeignKey("site.id", ondelete="CASCADE"), nullable=False, index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
 global_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-global-identity-v1")
 
 def issue_global_token(user):
@@ -794,7 +805,7 @@ function note(msg){$("notice").textContent=msg;$("notice").classList.remove("hid
 async function api(path,method="GET",body){const r=await fetch(API+path,{method,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},...(body?{body:JSON.stringify(body)}:{})});const data=await r.json().catch(()=>({error:"Ungültige Serverantwort"}));if(!r.ok)throw new Error(data.error||"Anfrage fehlgeschlagen");return data}
 function formData(form){return Object.fromEntries(new FormData(form).entries())}
 function safeText(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-function projectCard(p,editable){return '<article class="project"><div class="row"><b>'+safeText(p.name)+'</b><span class="status">'+safeText(p.status)+'</span></div><p>'+safeText(p.description)+'</p><p><a href="'+safeText(p.url)+'" target="_blank" rel="noopener noreferrer">'+safeText(p.url)+'</a></p><small>'+safeText(p.category)+'</small>'+(editable?'<div class="row" style="margin-top:12px"><button class="secondary" data-edit="'+p.id+'">Bearbeiten</button><button data-publish="'+p.id+'">'+(p.is_public?'Veröffentlichung aufheben':'Veröffentlichen')+'</button><button class="secondary" data-delete="'+p.id+'">Archivieren</button></div>':'')+'</article>'}
+function projectCard(p,editable){return '<article class="project"><div class="row"><b>'+safeText(p.name)+'</b><span class="status">'+safeText(p.status||'published')+'</span></div><p>'+safeText(p.description)+'</p><p><a href="'+safeText(p.url)+'" target="_blank" rel="noopener noreferrer">'+safeText(p.url)+'</a></p><small>'+safeText(p.category)+'</small>'+(p.slug?'<div class="row" style="margin-top:12px"><button class="secondary" data-sso="'+safeText(p.slug)+'">Mit ULTIMA anmelden ↗</button></div>':'')+(editable?'<div class="row" style="margin-top:12px"><button class="secondary" data-edit="'+p.id+'">Bearbeiten</button><button data-publish="'+p.id+'">'+(p.is_public?'Veröffentlichung aufheben':'Veröffentlichen')+'</button><button class="secondary" data-delete="'+p.id+'">Archivieren</button></div>':'')+'</article>'}
 async function refresh(){const data=await api("/api/global/me");me=data.user; $("auth").classList.add("hidden");$("dashboard").classList.remove("hidden");$("logout").classList.remove("hidden");$("profile").elements.display_name.value=me.display_name||"";$("profile").elements.bio.value=me.bio||"";$("profile").elements.avatar_url.value=me.avatar_url||"";const mine=await api("/api/global/projects");$("mine").innerHTML=mine.projects.length?mine.projects.map(p=>projectCard(p,true)).join(""):"<p class='muted'>Noch keine Websites eingetragen.</p>";const pub=await api("/api/global/public-projects");$("public").innerHTML=pub.projects.length?pub.projects.map(p=>projectCard(p,false)).join(""):"<p class='muted'>Noch keine öffentlichen Websites.</p>"}
 async function authSubmit(form,path){try{const data=await api(path,"POST",formData(form));token=data.token;sessionStorage.setItem("ultima_global_token",token);form.reset();await refresh();note("Willkommen bei ULTIMA.")}catch(e){alert(e.message)}}
 $("register").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/register")};
@@ -802,7 +813,7 @@ $("login").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/logi
 $("profile").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/profile","PATCH",formData(e.target));note("Profil gespeichert.")}catch(err){alert(err.message)}};
 $("project").onsubmit=async e=>{e.preventDefault();try{await api("/api/global/projects","POST",formData(e.target));e.target.reset();await refresh();note("Website wurde eingetragen. Du kannst sie jetzt veröffentlichen.")}catch(err){alert(err.message)}};
 $("mine").onclick=async e=>{const pub=e.target.dataset.publish,edit=e.target.dataset.edit,del=e.target.dataset.delete;try{if(pub){const p=(await api("/api/global/projects")).projects.find(x=>x.id==pub);await api("/api/global/projects/"+pub,"PATCH",{is_public:!p.is_public});await refresh();note("Veröffentlichungsstatus aktualisiert.")}else if(del){await api("/api/global/projects/"+del,"DELETE");await refresh();note("Website archiviert.")}else if(edit){const p=(await api("/api/global/projects")).projects.find(x=>x.id==edit);const name=prompt("Name",p.name);if(name===null)return;const url=prompt("HTTPS-Adresse",p.url);if(url===null)return;const description=prompt("Beschreibung",p.description);if(description===null)return;await api("/api/global/projects/"+edit,"PATCH",{name,url,description});await refresh();note("Website aktualisiert.")}}catch(err){alert(err.message)}};
-$("logout").onclick=()=>{token="";sessionStorage.removeItem("ultima_global_token");$("dashboard").classList.add("hidden");$("auth").classList.remove("hidden");$("logout").classList.add("hidden")};
+$("public").onclick=async e=>{const slug=e.target.dataset.sso;if(!slug)return;try{const d=await api("/api/global/sso/issue/"+encodeURIComponent(slug),"POST",{});location.href=d.redirect_url}catch(err){alert(err.message)}};\n$("logout").onclick=()=>{token="";sessionStorage.removeItem("ultima_global_token");$("dashboard").classList.add("hidden");$("auth").classList.remove("hidden");$("logout").classList.add("hidden")};
 if(token)refresh().catch(()=>{token="";sessionStorage.removeItem("ultima_global_token")});
 </script></main></html>"""
 
@@ -970,7 +981,63 @@ def global_projects_archive(project_id):
 @app.get("/api/global/public-projects")
 def global_public_projects():
     projects = WebsiteProject.query.filter_by(is_public=True, status="published").order_by(WebsiteProject.updated_at.desc()).limit(500).all()
-    return jsonify(projects=[{"id": p.id, "name": p.name, "url": p.url, "description": p.description, "category": p.category, "owner": p.owner.display_name or p.owner.username} for p in projects])
+    return jsonify(projects=[{"id": p.id, "name": p.name, "slug": p.slug, "url": p.url, "description": p.description, "category": p.category, "owner": p.owner.display_name or p.owner.username, "status": p.status} for p in projects])
+
+
+@app.post("/api/global/sso/issue/<slug>")
+@limiter.limit("20 per hour")
+def global_sso_issue(slug):
+    user = current_global_user()
+    if not user:
+        return jsonify(error="Bitte zuerst beim zentralen ULTIMA-Konto anmelden."), 401
+    site = Site.query.filter_by(slug=slug, is_active=True, membership_enabled=True).first()
+    if not site:
+        return jsonify(error="Diese Website ist noch nicht für ULTIMA Single Sign-on freigeschaltet."), 404
+    raw_code = secrets.token_urlsafe(32)
+    row = GlobalSSOCode(code_hash=hashlib.sha256(raw_code.encode("utf-8")).hexdigest(),
+        user_id=user.id, site_id=site.id, expires_at=datetime.now(timezone.utc) + timedelta(minutes=2))
+    db.session.add(row)
+    db.session.commit()
+    audit("global:" + user.email, "global.sso.issue", site.slug, str(row.id))
+    return jsonify(ok=True, redirect_url=site.origin.rstrip("/") + "/?ultima_sso=" + raw_code)
+
+@app.post("/api/global/sso/exchange")
+@limiter.limit("30 per hour")
+def global_sso_exchange():
+    data = request.get_json(silent=True) or {}
+    raw_code = str(data.get("code", "")).strip()
+    slug = str(data.get("slug", "")).strip().lower()
+    if not raw_code or not slug or len(raw_code) > 160:
+        return jsonify(error="SSO-Code oder Website-Kennung fehlt."), 400
+    digest = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+    code = GlobalSSOCode.query.filter_by(code_hash=digest).with_for_update().first()
+    now = datetime.now(timezone.utc)
+    if not code or code.used_at or code.expires_at <= now:
+        return jsonify(error="Der einmalige ULTIMA-Anmeldelink ist ungültig oder abgelaufen. Bitte erneut anmelden."), 401
+    site = db.session.get(Site, code.site_id)
+    user = db.session.get(GlobalUser, code.user_id)
+    if not site or site.slug != slug or not site.is_active or not site.membership_enabled or not user or user.status != "active":
+        return jsonify(error="Website oder ULTIMA-Konto ist nicht freigeschaltet."), 403
+    member = Member.query.filter(func.lower(Member.email) == user.email.lower(), Member.site_id == site.id).first()
+    if member and member.status != "active":
+        return jsonify(error="Das lokale Konto wartet noch auf Freigabe oder ist gesperrt."), 403
+    if not member:
+        base = user.username[:32]
+        username = base
+        suffix = 2
+        while Member.query.filter_by(site_id=site.id, username=username).first():
+            tail = "-" + str(suffix)
+            username = base[:32-len(tail)] + tail
+            suffix += 1
+        member = Member(site_id=site.id, email=user.email, username=username,
+            password_hash=generate_password_hash(secrets.token_urlsafe(32), method="scrypt"),
+            display_name=user.display_name or user.username, role="member", status="active")
+        db.session.add(member)
+    code.used_at = now
+    db.session.commit()
+    audit("global:" + user.email, "global.sso.exchange", site.slug, str(member.id))
+    return jsonify(ok=True, token=issue_token(member), site={"slug": site.slug, "name": site.name},
+        member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role})
 
 @app.get("/admin/website-projects")
 @admin_required
