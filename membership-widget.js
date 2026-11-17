@@ -89,6 +89,20 @@ function init(opts={}){
 
  window.UltimaMembership.chargeSuccessfulGeneration=async function(feature,requestId){return await apiCall("/credits/consume","POST",{feature:feature,request_id:requestId})};
  window.UltimaMembership.getCreditBalance=async function(){return await apiCall("/credits/balance")};
+ async function consumeSsoCode(){
+  const params=new URLSearchParams(location.search),code=params.get("ultima_sso");
+  if(!code)return;
+  params.delete("ultima_sso");
+  const clean=location.pathname+(params.toString()?"?"+params.toString():"")+location.hash;
+  history.replaceState({},document.title,clean);
+  try{
+   const r=await fetch(api+"/api/global/sso/exchange",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:code,slug:slug}),mode:"cors"});
+   const d=await r.json().catch(()=>({error:"ULTIMA-Anmeldung fehlgeschlagen."}));
+   if(!r.ok)throw Error(d.error||"ULTIMA-Anmeldung fehlgeschlagen.");
+   save(d.token);panel.hidden=false;await render();
+  }catch(e){panel.hidden=false;panel.innerHTML="<h3>ULTIMA-Anmeldung</h3><p role='status'>"+esc(e.message)+"</p><a href='https://ultima-membership-api.onrender.com/portal' target='_blank' rel='noopener noreferrer'>Zentrales ULTIMA-Konto öffnen ↗</a>";}
+ }
+ consumeSsoCode();
  btn.onclick=()=>{if(panel.hidden)render();else panel.hidden=true};
  aiBtn.onclick=()=>{if(!panel.hidden){copilotView();return;}if(token()){copilotView();panel.hidden=false;}else{render();}};
  document.addEventListener("keydown",e=>{if(e.key==="Escape")panel.hidden=true});
