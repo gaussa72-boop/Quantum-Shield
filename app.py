@@ -6,7 +6,7 @@ import hmac
 import smtplib
 import hashlib
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_UP
 from functools import wraps
 
 from flask import Flask, jsonify, request, session, redirect, url_for, render_template_string, abort, send_from_directory
@@ -58,6 +58,13 @@ if AI_MODE not in {"multi", "single", "off"}:
 if PUBLISH_MODE not in {"approval", "manual", "disabled"}:
     PUBLISH_MODE = "approval"
 GENERATION_PRICES = {"ai_generation": 1, "image_generation": 2, "video_generation": 5, "music_generation": 3, "game_generation": 25, "dlc_generation": 15, "mod_generation": 10}
+UNIFIED_PREMIUM_PRICE_EUR = Decimal(os.getenv("ULTIMA_PREMIUM_PRICE_EUR", "9.99"))
+PREMIUM_TRIAL_DAYS = int(os.getenv("ULTIMA_PREMIUM_TRIAL_DAYS", "7"))
+PREMIUM_TRIAL_USES = int(os.getenv("ULTIMA_PREMIUM_TRIAL_USES", "25"))
+PREMIUM_PERIOD_DAYS = int(os.getenv("ULTIMA_PREMIUM_PERIOD_DAYS", "30"))
+PREMIUM_CONFIRMATIONS_REQUIRED = int(os.getenv("ULTIMA_PREMIUM_CONFIRMATIONS", "2"))
+PREMIUM_SELLER_READY = bool(os.getenv("ULTIMA_SELLER_LEGAL_NAME", "").strip() and os.getenv("ULTIMA_SELLER_ADDRESS", "").strip() and os.getenv("ULTIMA_PUBLIC_URL", "").strip())
+
 
 class Site(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -208,6 +215,98 @@ class GlobalSSOCode(db.Model):
     used_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
+class NetworkPremiumAccount(db.Model):
+    __tablename__ = "network_premium_account"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    trial_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    trial_ends_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    trial_limit = db.Column(db.Integer, nullable=False, default=PREMIUM_TRIAL_USES)
+    trial_used = db.Column(db.Integer, nullable=False, default=0)
+    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    renewal_disabled = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+class NetworkPremiumUsage(db.Model):
+    __tablename__ = "network_premium_usage"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    site_slug = db.Column(db.String(64), nullable=False, index=True)
+    feature = db.Column(db.String(64), nullable=False)
+    request_id = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    state = db.Column(db.String(24), nullable=False, default="reserved")
+    trial_charge = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class NetworkPremiumInvoice(db.Model):
+    __tablename__ = "network_premium_invoice"
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_code = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    site_slug = db.Column(db.String(64), nullable=False, default="ultima-network")
+    amount_eur = db.Column(db.Numeric(10, 2), nullable=False)
+    btc_eur_rate = db.Column(db.Numeric(20, 2), nullable=False)
+    expected_sats = db.Column(db.BigInteger, nullable=False)
+    wallet_address = db.Column(db.String(128), nullable=False)
+    network = db.Column(db.String(32), nullable=False, default="Bitcoin mainnet")
+    txid = db.Column(db.String(64), unique=True, nullable=True, index=True)
+    paid_amount_sats = db.Column(db.BigInteger, nullable=True)
+    confirmations = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    verification_note = db.Column(db.String(500), default="", nullable=False)
+
+
+class NetworkPremiumAccount(db.Model):
+    __tablename__ = "network_premium_account"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    trial_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    trial_ends_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    trial_limit = db.Column(db.Integer, nullable=False, default=PREMIUM_TRIAL_USES)
+    trial_used = db.Column(db.Integer, nullable=False, default=0)
+    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    renewal_disabled = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+class NetworkPremiumUsage(db.Model):
+    __tablename__ = "network_premium_usage"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    site_slug = db.Column(db.String(64), nullable=False, index=True)
+    feature = db.Column(db.String(64), nullable=False)
+    request_id = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    state = db.Column(db.String(24), nullable=False, default="reserved")
+    trial_charge = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class NetworkPremiumInvoice(db.Model):
+    __tablename__ = "network_premium_invoice"
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_code = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    site_slug = db.Column(db.String(64), nullable=False, default="ultima-network")
+    amount_eur = db.Column(db.Numeric(10, 2), nullable=False)
+    btc_eur_rate = db.Column(db.Numeric(20, 2), nullable=False)
+    expected_sats = db.Column(db.BigInteger, nullable=False)
+    wallet_address = db.Column(db.String(128), nullable=False)
+    network = db.Column(db.String(32), nullable=False, default="Bitcoin mainnet")
+    txid = db.Column(db.String(64), unique=True, nullable=True, index=True)
+    paid_amount_sats = db.Column(db.BigInteger, nullable=True)
+    confirmations = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    verification_note = db.Column(db.String(500), default="", nullable=False)
+
+
 global_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-global-identity-v1")
 
 def issue_global_token(user):
@@ -226,6 +325,176 @@ def current_global_user():
     if not user or user.status != "active" or user.token_version != payload.get("version"):
         return None
     return user
+
+def premium_checkout_ready():
+    return bool(BTC_ADDRESS and PREMIUM_SELLER_READY and os.getenv("ULTIMA_PREMIUM_CRYPTO_ENABLED", "true").lower() == "true")
+
+def premium_account_for(email, start_trial=False):
+    normalized = str(email or "").strip().lower()
+    account = NetworkPremiumAccount.query.filter(func.lower(NetworkPremiumAccount.email) == normalized).with_for_update().first()
+    now = datetime.now(timezone.utc)
+    if not account:
+        account = NetworkPremiumAccount(email=normalized, trial_limit=PREMIUM_TRIAL_USES)
+        db.session.add(account)
+        db.session.flush()
+    if start_trial and not account.trial_started_at:
+        account.trial_started_at = now
+        account.trial_ends_at = now + timedelta(days=PREMIUM_TRIAL_DAYS)
+        account.trial_limit = PREMIUM_TRIAL_USES
+        account.trial_used = 0
+    return account
+
+def premium_status_payload(email, start_trial=False):
+    normalized = str(email or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    if ADMIN_OWNER_EMAIL and normalized == ADMIN_OWNER_EMAIL:
+        return {"status":"lifetime","active":True,"can_use":True,"lifetime":True,"trial_days_remaining":0,
+                "trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,"trial_remaining":0,
+                "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
+                "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":premium_checkout_ready(),
+                "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK}
+    account = premium_account_for(normalized, start_trial=start_trial)
+    paid = bool(account.paid_until and account.paid_until > now)
+    started = bool(account.trial_started_at)
+    trial_time_left = bool(account.trial_ends_at and account.trial_ends_at > now)
+    remaining = max(0, int(account.trial_limit or PREMIUM_TRIAL_USES) - int(account.trial_used or 0))
+    trial = bool(started and trial_time_left and remaining > 0 and not paid)
+    state = "paid" if paid else ("trial" if trial else ("expired" if started else "not_started"))
+    db.session.commit()
+    seconds = max(0, int((account.trial_ends_at - now).total_seconds())) if account.trial_ends_at and trial else 0
+    return {"status":state,"active":bool(paid or trial),"can_use":bool(paid or trial),"lifetime":False,
+            "trial_started":started,"trial_days_remaining":(seconds + 86399)//86400,
+            "trial_limit":int(account.trial_limit or PREMIUM_TRIAL_USES),"trial_used":int(account.trial_used or 0),
+            "trial_remaining":remaining,"paid_until":account.paid_until.isoformat() if account.paid_until else None,
+            "renewal_disabled":bool(account.renewal_disabled),"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
+            "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":premium_checkout_ready(),
+            "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
+            "message":"30-Tage-Premium-Pass, keine automatische Wallet-Abbuchung."}
+
+def premium_reserve_usage(email, site_slug, feature, request_id):
+    normalized = str(email or "").strip().lower()
+    existing = NetworkPremiumUsage.query.filter_by(request_id=request_id).first()
+    if existing:
+        if existing.email.lower() != normalized or existing.state == "refunded":
+            return False, {"status":"request_conflict","error":"Diese request_id wurde bereits verwendet."}
+        return True, {"already_reserved":True,"trial":existing.trial_charge}
+    if ADMIN_OWNER_EMAIL and normalized == ADMIN_OWNER_EMAIL:
+        return True, {"lifetime":True,"trial":False}
+    account = premium_account_for(normalized, start_trial=True)
+    now = datetime.now(timezone.utc)
+    paid = bool(account.paid_until and account.paid_until > now)
+    remaining = max(0, int(account.trial_limit or PREMIUM_TRIAL_USES) - int(account.trial_used or 0))
+    trial_time_left = bool(account.trial_ends_at and account.trial_ends_at > now)
+    if not paid and (not trial_time_left or remaining <= 0):
+        db.session.commit()
+        return False, {"status":"expired","trial_limit":int(account.trial_limit or PREMIUM_TRIAL_USES),
+                       "trial_used":int(account.trial_used or 0),"trial_remaining":remaining,
+                       "price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),"checkout_ready":premium_checkout_ready(),
+                       "error":"Deine ULTIMA-Testphase ist beendet oder das Nutzungslimit erreicht. Premium kann zentral verlängert werden."}
+    charge_trial = not paid
+    if charge_trial:
+        account.trial_used += 1
+    db.session.add(NetworkPremiumUsage(email=normalized,site_slug=site_slug[:64],feature=feature[:64],
+        request_id=request_id,state="reserved",trial_charge=charge_trial))
+    db.session.commit()
+    return True, {"trial":charge_trial,"trial_used":account.trial_used if charge_trial else None,
+                  "trial_limit":account.trial_limit if charge_trial else None,"paid":paid}
+
+def premium_complete_usage(email, request_id):
+    event = NetworkPremiumUsage.query.filter_by(request_id=request_id, email=str(email or "").strip().lower()).with_for_update().first()
+    if event and event.state == "reserved":
+        event.state = "used"
+        db.session.commit()
+    return bool(event)
+
+def premium_refund_usage(email, request_id):
+    event = NetworkPremiumUsage.query.filter_by(request_id=request_id, email=str(email or "").strip().lower()).with_for_update().first()
+    if event and event.state == "reserved":
+        if event.trial_charge:
+            account = NetworkPremiumAccount.query.filter(func.lower(NetworkPremiumAccount.email) == event.email.lower()).with_for_update().first()
+            if account:
+                account.trial_used = max(0, account.trial_used - 1)
+        event.state = "refunded"
+        db.session.commit()
+        return True
+    return False
+
+def mempool_json(path):
+    req = Request("https://mempool.space/api/" + path.lstrip("/"),
+                  headers={"User-Agent":"ULTIMA-Premium-Billing/1.0","Accept":"application/json"})
+    with urlopen(req, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+def create_network_premium_invoice(email, site_slug="ultima-network"):
+    if not premium_checkout_ready():
+        raise ValueError("Der Kryptocheckout ist noch nicht produktiv freigeschaltet. Wallet und rechtliche Anbieterangaben müssen in Render konfiguriert sein.")
+    prices = mempool_json("v1/prices")
+    btc_eur = Decimal(str(prices.get("EUR", "0")))
+    if not btc_eur.is_finite() or btc_eur <= 0:
+        raise ValueError("Der aktuelle BTC/EUR-Kurs ist gerade nicht verfügbar.")
+    sats = int((UNIFIED_PREMIUM_PRICE_EUR / btc_eur * Decimal("100000000")).to_integral_value(rounding=ROUND_UP))
+    if sats <= 0:
+        raise ValueError("Der errechnete Bitcoin-Rechnungsbetrag ist ungültig.")
+    invoice = NetworkPremiumInvoice(invoice_code=secrets.token_urlsafe(18),email=str(email).strip().lower(),
+        site_slug=site_slug[:64],amount_eur=UNIFIED_PREMIUM_PRICE_EUR,btc_eur_rate=btc_eur,
+        expected_sats=sats,wallet_address=BTC_ADDRESS,network=BTC_NETWORK,status="pending",
+        expires_at=datetime.now(timezone.utc)+timedelta(minutes=30))
+    db.session.add(invoice)
+    db.session.commit()
+    btc_amount = (Decimal(sats)/Decimal("100000000")).quantize(Decimal("0.00000001"))
+    return {"invoice_code":invoice.invoice_code,"email":invoice.email,"site_slug":invoice.site_slug,
+            "amount_eur":str(invoice.amount_eur),"btc_eur_rate":str(invoice.btc_eur_rate),
+            "expected_btc":str(btc_amount),"expected_sats":sats,"wallet":invoice.wallet_address,
+            "network":invoice.network,"expires_at":invoice.expires_at.isoformat(),
+            "payment_uri":"bitcoin:"+invoice.wallet_address+"?amount="+format(btc_amount,"f")}
+
+def verify_network_premium_invoice(invoice, txid):
+    txid = str(txid or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}",txid):
+        raise ValueError("Bitte eine gültige Bitcoin-TXID mit 64 Hex-Zeichen angeben.")
+    if invoice.txid and invoice.txid != txid:
+        raise ValueError("Für diese Rechnung wurde bereits eine andere Transaktion eingereicht.")
+    used = NetworkPremiumInvoice.query.filter(NetworkPremiumInvoice.txid == txid, NetworkPremiumInvoice.id != invoice.id).first()
+    if used:
+        raise ValueError("Diese Bitcoin-TXID wurde bereits für eine andere Rechnung verwendet.")
+    tx = mempool_json("tx/"+txid)
+    received = sum(int(out.get("value",0)) for out in tx.get("vout",[])
+                   if out.get("scriptpubkey_address") == invoice.wallet_address)
+    if received < int(invoice.expected_sats):
+        raise ValueError("Die Transaktion enthält noch nicht den vollständigen Rechnungsbetrag an die hinterlegte Wallet.")
+    status = tx.get("status") or {}
+    confirmations = 0
+    if status.get("confirmed") and status.get("block_height"):
+        tip = int(mempool_json("blocks/tip/height"))
+        confirmations = max(0,tip-int(status["block_height"])+1)
+    invoice.txid=txid
+    invoice.paid_amount_sats=received
+    invoice.confirmations=confirmations
+    invoice.verification_note="Bitcoin mainnet · Zahlung an die konfigurierte ULTIMA-Wallet geprüft"
+    if confirmations >= PREMIUM_CONFIRMATIONS_REQUIRED:
+        now = datetime.now(timezone.utc)
+        account = premium_account_for(invoice.email)
+        base = account.paid_until if account.paid_until and account.paid_until > now else now
+        account.paid_until = base + timedelta(days=PREMIUM_PERIOD_DAYS)
+        account.renewal_disabled = True
+        invoice.status="paid"
+        invoice.paid_at=now
+        invoice.paid_until=account.paid_until
+        db.session.commit()
+        return {"status":"paid","confirmations":confirmations,"required_confirmations":PREMIUM_CONFIRMATIONS_REQUIRED,
+                "paid_until":account.paid_until.isoformat(),"message":"Zahlung bestätigt. ULTIMA Premium ist im gesamten Netzwerk freigeschaltet."}
+    invoice.status="confirming" if confirmations else "awaiting_confirmations"
+    db.session.commit()
+    return {"status":invoice.status,"confirmations":confirmations,
+            "required_confirmations":PREMIUM_CONFIRMATIONS_REQUIRED,
+            "message":"Transaktion gefunden und Betrag stimmt. Premium wird nach den erforderlichen Bitcoin-Bestätigungen freigeschaltet."}
+
+def premium_invoice_payload(invoice):
+    btc_amount=(Decimal(int(invoice.expected_sats))/Decimal("100000000")).quantize(Decimal("0.00000001"))
+    return {"invoice_code":invoice.invoice_code,"amount_eur":str(invoice.amount_eur),"expected_btc":str(btc_amount),
+            "wallet":invoice.wallet_address,"network":invoice.network,"txid":invoice.txid,"status":invoice.status,
+            "confirmations":invoice.confirmations,"expires_at":invoice.expires_at.isoformat(),
+            "paid_until":invoice.paid_until.isoformat() if invoice.paid_until else None}
 
 def clean_project_url(raw):
     value = str(raw or "").strip()
