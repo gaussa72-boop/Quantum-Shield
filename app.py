@@ -1194,6 +1194,7 @@ a{color:var(--cyan)}.notice{padding:12px;border-radius:10px;background:#14243a;m
 <div class="card"><h2>Anmelden</h2><form id="login"><label>E-Mail oder Benutzername</label><input name="identity" required><label>Passwort</label><input name="password" type="password" required><button>Anmelden</button></form></div></div></section>
 <section id="dashboard" class="hidden"><h1>Dein Profil & Website-Studio</h1><div id="notice" class="notice hidden"></div><div class="grid"><section class="card"><h2>Profil bearbeiten</h2><form id="profile"><label>Anzeigename</label><input name="display_name" maxlength="120"><label>Biografie</label><textarea name="bio" rows="3" maxlength="1000"></textarea><label>Avatar-URL (optional)</label><input name="avatar_url" type="url" maxlength="500"><button>Profil speichern</button></form></section>
 <section class="card"><h2>Neue Website eintragen</h2><form id="project"><label>Name</label><input name="name" maxlength="120" required><label>Adresse (HTTPS)</label><input name="url" type="url" placeholder="https://deine-website.de" required><label>Kategorie</label><select name="category"><option>Website</option><option>KI & Technologie</option><option>Shop</option><option>Community</option><option>Kreativprojekt</option><option>Sonstiges</option></select><label>Beschreibung</label><textarea name="description" rows="3" maxlength="2000"></textarea><button>Website speichern</button></form></section></div>
+<section class="card" id="premium-card"><h2>ULTIMA Network Premium</h2><p class="muted">Eine Premium-Mitgliedschaft für alle freigeschalteten Websites des Netzwerks. Deine Testphase läuft 7 Tage oder bis zu 25 Premium-Aktionen, je nachdem, was zuerst eintritt.</p><div id="premium-status" class="notice">Premium-Status wird geladen …</div><div id="premium-actions" class="row"></div><div id="premium-invoices"></div><p class="muted">Tarif: 9,99 € für 30 Tage. Kein automatischer Wallet-Einzug. Die Zahlung wird erst nach Prüfung der Bitcoin-Transaktion und zwei Netzwerkbestätigungen freigeschaltet.</p><p class="muted">Premium-Generierungen: erweiterte KI-Modelle, Musik-/Video-/Bild-KI, Spiel- und Mod-Generierung sowie weitere rechenintensive Generatoren. Basiszugriff, Anmeldung und Profilfunktionen bleiben verfügbar.</p></section>
 <section class="card"><h2>Meine Websites</h2><p class="muted">Bearbeite deine Einträge und veröffentliche sie im öffentlichen ULTIMA-Verzeichnis.</p><div id="mine"></div></section>
 <section class="card"><h2>Öffentliches Website-Verzeichnis</h2><div id="public"></div></section></section>
 <script>
@@ -1204,7 +1205,41 @@ async function api(path,method="GET",body){const r=await fetch(API+path,{method,
 function formData(form){return Object.fromEntries(new FormData(form).entries())}
 function safeText(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function projectCard(p,editable){return '<article class="project"><div class="row"><b>'+safeText(p.name)+'</b><span class="status">'+safeText(p.status||'published')+'</span></div><p>'+safeText(p.description)+'</p><p><a href="'+safeText(p.url)+'" target="_blank" rel="noopener noreferrer">'+safeText(p.url)+'</a></p><small>'+safeText(p.category)+'</small>'+(p.slug?'<div class="row" style="margin-top:12px"><button class="secondary" data-sso="'+safeText(p.slug)+'">Mit ULTIMA anmelden ↗</button></div>':'')+(editable?'<div class="row" style="margin-top:12px"><button class="secondary" data-edit="'+p.id+'">Bearbeiten</button><button data-publish="'+p.id+'">'+(p.is_public?'Veröffentlichung aufheben':'Veröffentlichen')+'</button><button class="secondary" data-delete="'+p.id+'">Archivieren</button></div>':'')+'</article>'}
-async function refresh(){const data=await api("/api/global/me");me=data.user; $("auth").classList.add("hidden");$("dashboard").classList.remove("hidden");$("logout").classList.remove("hidden");$("profile").elements.display_name.value=me.display_name||"";$("profile").elements.bio.value=me.bio||"";$("profile").elements.avatar_url.value=me.avatar_url||"";const mine=await api("/api/global/projects");$("mine").innerHTML=mine.projects.length?mine.projects.map(p=>projectCard(p,true)).join(""):"<p class='muted'>Noch keine Websites eingetragen.</p>";const pub=await api("/api/global/public-projects");$("public").innerHTML=pub.projects.length?pub.projects.map(p=>projectCard(p,false)).join(""):"<p class='muted'>Noch keine öffentlichen Websites.</p>"}
+async function refreshPremium(){
+ const statusRoot=$("premium-status"),actions=$("premium-actions"),invoicesRoot=$("premium-invoices");
+ statusRoot.textContent="Premium-Status wird geladen …";actions.innerHTML="";invoicesRoot.innerHTML="";
+ try{
+  const d=await api("/api/global/premium/status"),p=d.premium||{};
+  let heading=p.status==="lifetime"?"Master Premium · lebenslang aktiv":p.status==="paid"?"Premium aktiv":p.status==="trial"?"Kostenlose Testphase aktiv":p.status==="not_started"?"Testphase noch nicht gestartet":"Testphase beendet";
+  statusRoot.innerHTML="<b>"+safeText(heading)+"</b><br>"+(p.status==="trial"?"Verbrauch: "+safeText(p.trial_used)+" / "+safeText(p.trial_limit)+" · verbleibend: "+safeText(p.trial_remaining)+" Aktionen · noch "+safeText(p.trial_days_remaining)+" Tage":p.status==="paid"?"Freigeschaltet bis: "+safeText(p.paid_until||""):"Tarif: "+safeText(p.price_eur||"9.99")+" € / "+safeText(p.period_days||30)+" Tage");
+  if(p.status==="not_started"){
+   const trial=document.createElement("button");trial.textContent="7-Tage-Testphase starten";trial.onclick=async()=>{trial.disabled=true;try{await api("/api/global/premium/trial/start","POST",{});await refreshPremium()}catch(e){alert(e.message);trial.disabled=false}};actions.append(trial);
+  }
+  if(p.checkout_ready){
+   const buy=document.createElement("button");buy.textContent="Jetzt zahlungspflichtig bestellen · 9,99 €";buy.onclick=async()=>{buy.disabled=true;try{const d=await api("/api/global/premium/invoices","POST",{});await refreshPremium();note("Bitcoin-Rechnung erstellt. Bitte zahle exakt den angezeigten Betrag an die Rechnungwallet.")}catch(e){alert(e.message);buy.disabled=false}};actions.append(buy);
+  }else{
+   const info=document.createElement("p");info.className="muted";info.textContent="Bitcoin-Checkout ist noch nicht freigeschaltet. Der Betreiber muss die Wallet-Adresse sowie Anbietername, Geschäftsanschrift und öffentliche Vertrags-/Website-Angaben in Render hinterlegen. Bitte noch keine Bitcoin senden.";actions.append(info);
+  }
+  const items=d.invoices||p.invoices||[];
+  items.forEach(x=>{
+   const card=document.createElement("article");card.className="project";
+   const title=document.createElement("b");title.textContent="Rechnung "+x.invoice_code+" · "+x.amount_eur+" EUR";
+   const details=document.createElement("p");details.textContent="Soll: "+x.expected_btc+" BTC · "+x.status+" · Bestätigungen: "+x.confirmations+" · Ablauf: "+x.expires_at;
+   card.append(title,details);
+   const wallet=document.createElement("p");wallet.style.overflowWrap="anywhere";wallet.textContent="Empfangswallet: "+x.wallet;card.append(wallet);
+   if(x.payment_uri){const link=document.createElement("a");link.href=x.payment_uri;link.textContent="Bitcoin-Wallet öffnen";card.append(link)}
+   if(x.status!=="paid"&&x.status!=="expired"&&x.status!=="cancelled"){
+    const form=document.createElement("form");form.className="row";form.dataset.invoice=x.invoice_code;
+    const input=document.createElement("input");input.name="txid";input.placeholder="Bitcoin-TXID (64 Hex-Zeichen)";input.minLength=64;input.maxLength=64;input.required=true;input.style.flex="1 1 360px";
+    const submit=document.createElement("button");submit.textContent="TXID prüfen";form.append(input,submit);
+    form.onsubmit=async e=>{e.preventDefault();submit.disabled=true;try{const r=await api("/api/global/premium/invoices/"+encodeURIComponent(x.invoice_code)+"/submit","POST",{txid:input.value.trim()});alert(r.result?.message||"Transaktion geprüft.");await refreshPremium()}catch(err){alert(err.message);submit.disabled=false}};
+    card.append(form);
+   }
+   invoicesRoot.append(card);
+  });
+ }catch(e){statusRoot.textContent="Premium-Status nicht erreichbar: "+e.message}
+}
+async function refresh(){const data=await api("/api/global/me");me=data.user; $("auth").classList.add("hidden");$("dashboard").classList.remove("hidden");$("logout").classList.remove("hidden");$("profile").elements.display_name.value=me.display_name||"";$("profile").elements.bio.value=me.bio||"";$("profile").elements.avatar_url.value=me.avatar_url||"";const mine=await api("/api/global/projects");$("mine").innerHTML=mine.projects.length?mine.projects.map(p=>projectCard(p,true)).join(""):"<p class='muted'>Noch keine Websites eingetragen.</p>";const pub=await api("/api/global/public-projects");$("public").innerHTML=pub.projects.length?pub.projects.map(p=>projectCard(p,false)).join(""):"<p class='muted'>Noch keine öffentlichen Websites.</p>";await refreshPremium()}
 async function authSubmit(form,path){try{const data=await api(path,"POST",formData(form));token=data.token;sessionStorage.setItem("ultima_global_token",token);form.reset();await refresh();note("Willkommen bei ULTIMA.")}catch(e){alert(e.message)}}
 $("register").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/register")};
 $("login").onsubmit=e=>{e.preventDefault();authSubmit(e.target,"/api/global/login")};
