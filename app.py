@@ -874,11 +874,46 @@ def global_login():
     data = request.get_json(silent=True) or {}
     identity = str(data.get("identity", "")).strip()
     password = str(data.get("password", ""))
+    if not identity or not password:
+        return jsonify(error="E-Mail/Benutzername und Passwort werden benötigt."), 400
+
     user = GlobalUser.query.filter(func.lower(GlobalUser.email) == identity.lower()).first()
     if not user:
         user = GlobalUser.query.filter(func.lower(GlobalUser.username) == identity.lower()).first()
-    if not user or user.status != "active" or not check_password_hash(user.password_hash, password):
+
+    valid_global = bool(user and user.status == "active" and check_password_hash(user.password_hash, password))
+
+    # Compatibility bridge for older ULTIMA owner accounts. Older installations
+    # stored the owner hash in Admin, while the new portal authenticates GlobalUser.
+    # A successful password check is required before linking; no password is reset.
+    if not valid_global and ADMIN_OWNER_EMAIL and identity.lower() == ADMIN_OWNER_EMAIL:
+        legacy_admin = Admin.query.filter(func.lower(Admin.email) == ADMIN_OWNER_EMAIL).first()
+        if legacy_admin and check_password_hash(legacy_admin.password_hash, password):
+            if not user:
+                base = re.sub(r"[^A-Za-z0-9_.-]", "", ADMIN_OWNER_EMAIL.split("@", 1)[0])[:32] or "ultima-owner"
+                base = base if len(base) >= 3 else (base + "-owner")[:32]
+                username = base
+                suffix = 2
+                while GlobalUser.query.filter(func.lower(GlobalUser.username) == username.lower()).first():
+                    tail = "-" + str(suffix)
+                    username = base[:32-len(tail)] + tail
+                    suffix += 1
+                user = GlobalUser(email=ADMIN_OWNER_EMAIL, username=username,
+                    password_hash=legacy_admin.password_hash, display_name=username,
+                    role="owner", status="active")
+                db.session.add(user)
+            else:
+                user.password_hash = legacy_admin.password_hash
+                user.role = "owner"
+                user.status = "active"
+                user.token_version += 1
+            legacy_admin.role = "superadmin"
+            db.session.commit()
+            valid_global = True
+
+    if not valid_global:
         return jsonify(error="Anmeldedaten ungültig oder Konto gesperrt."), 401
+
     audit("global:" + user.email, "global.login", None, str(user.id))
     return jsonify(ok=True, token=issue_global_token(user), user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "role": user.role})
 
@@ -1490,9 +1525,10 @@ with app.app_context():
         )
     if ADMIN_OWNER_EMAIL:
         owner_member_query = Member.query.filter(func.lower(Member.email) == ADMIN_OWNER_EMAIL)
+        # Idempotent owner sync: do not invalidate the owner's active sessions
+        # merely because Render restarts or deploys this service.
         owner_member_query.update(
-            {"role": "superadmin", "status": "active", "is_lifetime_premium": True,
-             "token_version": Member.token_version + 1},
+            {"role": "superadmin", "status": "active", "is_lifetime_premium": True},
             synchronize_session=False
         )
         global_owner = GlobalUser.query.filter(func.lower(GlobalUser.email) == ADMIN_OWNER_EMAIL).first()
