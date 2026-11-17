@@ -528,6 +528,74 @@ def audit(actor, action, site_slug=None, target=None):
     db.session.add(AuditLog(actor=actor, action=action, site_slug=site_slug, target=target, ip=(request.remote_addr or "")[:64]))
     db.session.commit()
 
+def ai_provider_candidates():
+    """Return configured OpenAI-compatible providers in a deterministic fallback order."""
+    candidates = []
+    configured = [
+        ("ULTIMA", os.getenv("ULTIMA_AI_API_KEY", "").strip(),
+         os.getenv("ULTIMA_AI_BASE_URL", "https://api.openai.com/v1").strip(),
+         os.getenv("ULTIMA_AI_MODEL", "gpt-4.1-mini").strip()),
+        ("OPENAI", os.getenv("OPENAI_API_KEY", "").strip(),
+         "https://api.openai.com/v1", os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()),
+        ("OPENROUTER", os.getenv("OPENROUTER_API_KEY", "").strip(),
+         "https://openrouter.ai/api/v1", os.getenv("OPENROUTER_MODEL", "openai/gpt-4.1-mini").strip()),
+        ("GROQ", os.getenv("GROQ_API_KEY", "").strip(),
+         "https://api.groq.com/openai/v1", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()),
+        ("TOGETHER", os.getenv("TOGETHER_API_KEY", "").strip(),
+         "https://api.together.xyz/v1", os.getenv("TOGETHER_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo").strip()),
+        ("DEEPSEEK", os.getenv("DEEPSEEK_API_KEY", "").strip(),
+         "https://api.deepseek.com/v1", os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()),
+    ]
+    preferred = os.getenv("ULTIMA_AI_PROVIDER", "").strip().upper()
+    if preferred:
+        configured.sort(key=lambda row: 0 if row[0] == preferred else 1)
+    seen = set()
+    for name, key, base_url, model in configured:
+        base_url = base_url.rstrip("/")
+        signature = (key, base_url)
+        if not key or not base_url or not model or signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append({"provider": name.lower(), "api_key": key, "base_url": base_url, "model": model})
+    return candidates
+
+def request_ai_completion(messages):
+    candidates = ai_provider_candidates()
+    if not candidates:
+        raise RuntimeError("Kein KI-Provider-Secret konfiguriert.")
+    failures = []
+    for candidate in candidates:
+        provider = candidate["provider"]
+        payload = {
+            "model": candidate["model"],
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": 1200,
+        }
+        headers = {"Authorization": "Bearer " + candidate["api_key"], "Content-Type": "application/json"}
+        if provider == "openrouter":
+            headers["HTTP-Referer"] = os.getenv("ULTIMA_PUBLIC_URL", "https://ultima-central-45ne.onrender.com")
+            headers["X-Title"] = "ULTIMA Network Intelligence"
+        req = Request(candidate["base_url"] + "/chat/completions",
+                      data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urlopen(req, timeout=25) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            message = result.get("choices", [{}])[0].get("message", {})
+            answer = message.get("content", "")
+            if isinstance(answer, list):
+                answer = "".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in answer)
+            answer = str(answer or "").strip()
+            if not answer:
+                raise ValueError("Leere KI-Antwort")
+            return {"answer": answer, "model": candidate["model"], "provider": provider}
+        except Exception as exc:
+            # Never log provider secrets, request bodies or raw upstream error payloads.
+            failures.append(provider + ":" + type(exc).__name__)
+            app.logger.warning("AI provider %s failed (%s); trying next configured provider",
+                               provider, type(exc).__name__)
+    raise RuntimeError("Alle eingerichteten KI-Anbieter sind fehlgeschlagen: " + ", ".join(failures))
+
 def site_for(slug):
     site = Site.query.filter_by(slug=slug, is_active=True).first()
     if not site or not site.membership_enabled:
@@ -819,9 +887,6 @@ def member_copilot(slug):
         return jsonify(error="Dein Konto ist noch nicht freigegeben."), 403
     if AI_MODE == "off":
         return jsonify(error="Der KI-Copilot ist für diese Plattform derzeit deaktiviert."), 503
-    api_key = os.getenv("ULTIMA_AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return jsonify(error="Der Copilot ist vorbereitet. Der Betreiber muss noch ULTIMA_AI_API_KEY als Render-Secret hinterlegen."), 503
     data = request.get_json(silent=True) or {}
     message = str(data.get("message", "")).strip()
     history = data.get("history", [])
@@ -834,18 +899,20 @@ def member_copilot(slug):
                 content = str(item.get("content", ""))[:1500]
                 if content:
                     safe_history.append({"role": item["role"], "content": content})
-    base_url = os.getenv("ULTIMA_AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    model = os.getenv("ULTIMA_AI_MODEL", "gpt-4.1-mini")
+    if not ai_provider_candidates():
+        return jsonify(error="Der Copilot ist vorbereitet. Bitte mindestens ein Provider-Secret (ULTIMA_AI_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, TOGETHER_API_KEY oder DEEPSEEK_API_KEY) in Render einrichten."), 503
+
     usage_id = "copilot-" + secrets.token_urlsafe(18)
     allowed, entitlement = premium_reserve_usage(member.email, site.slug, "ai_generation", usage_id)
     if not allowed:
         return jsonify(error=entitlement.get("error"), premium=entitlement, upgrade_url="/portal"), 402
     system_prompt = (
-        "Du bist ULTIMA Copilot, ein hilfreicher Assistent innerhalb einer Website. "
+        "Du bist ULTIMA Copilot, der individuelle KI-Assistent innerhalb einer bestimmten Website. "
         "Antworte in der Sprache des Mitglieds, standardmäßig Deutsch. "
         "Website: " + site.name + " (" + site.slug + "). "
         "Mitgliedsrolle: " + member.role + ". "
-        "Behalte den individuellen Charakter und die Fachdomäne dieser Website bei. "
+        "Behalte die eigenständige Identität, Persona, Fachdomäne, Produktlogik und Wissensbasis dieser Website bei. "
+        "Vereinheitliche nicht den Charakter mit anderen ULTIMA-KIs. "
         "Hilf bei Navigation, Profil, Mitgliedschaft, Shop, Inhalten, Ideen, Website-Bedienung, "
         "Fehlersuche und Planung. Behaupte niemals, du hättest etwas veröffentlicht, gekauft, geändert "
         "oder deployed, wenn keine entsprechende bestätigte Aktion ausgeführt wurde. "
@@ -854,20 +921,15 @@ def member_copilot(slug):
         "Bei Änderungen an Preisen, Zahlungen, Konten, Veröffentlichungen oder produktivem Code "
         "erkläre den Vorschlag und verlange ausdrückliche Freigabe durch einen berechtigten Administrator."
     )
-    payload = {"model": model, "messages": [{"role": "system", "content": system_prompt}] + safe_history + [{"role": "user", "content": message}], "temperature": 0.4, "max_tokens": 900}
-    req = Request(base_url + "/chat/completions", data=json.dumps(payload).encode("utf-8"), headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
     try:
-        with urlopen(req, timeout=25) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        answer = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if not answer:
-            raise ValueError("Leere KI-Antwort")
+        result = request_ai_completion([{"role": "system", "content": system_prompt}] + safe_history + [{"role": "user", "content": message}])
         premium_complete_usage(member.email, usage_id)
-        return jsonify(ok=True, answer=str(answer)[:8000], model=model, site=site.slug,
-                        premium=entitlement, request_id=usage_id)
+        return jsonify(ok=True, answer=result["answer"][:8000], model=result["model"],
+                        provider=result["provider"], site=site.slug, premium=entitlement,
+                        request_id=usage_id)
     except Exception as exc:
         premium_refund_usage(member.email, usage_id)
-        app.logger.warning("Copilot provider request failed: %s", type(exc).__name__)
+        app.logger.warning("Copilot provider chain failed: %s", type(exc).__name__)
         return jsonify(error="Der KI-Dienst ist momentan nicht erreichbar. Deine Premium-Testnutzung wurde zurückerstattet."), 502
 
 @app.patch("/api/<slug>/profile")
