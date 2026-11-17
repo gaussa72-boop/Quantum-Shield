@@ -261,52 +261,6 @@ class NetworkPremiumInvoice(db.Model):
     verification_note = db.Column(db.String(500), default="", nullable=False)
 
 
-class NetworkPremiumAccount(db.Model):
-    __tablename__ = "network_premium_account"
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    trial_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    trial_ends_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    trial_limit = db.Column(db.Integer, nullable=False, default=PREMIUM_TRIAL_USES)
-    trial_used = db.Column(db.Integer, nullable=False, default=0)
-    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
-    renewal_disabled = db.Column(db.Boolean, nullable=False, default=True)
-    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
-
-class NetworkPremiumUsage(db.Model):
-    __tablename__ = "network_premium_usage"
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(255), nullable=False, index=True)
-    site_slug = db.Column(db.String(64), nullable=False, index=True)
-    feature = db.Column(db.String(64), nullable=False)
-    request_id = db.Column(db.String(128), unique=True, nullable=False, index=True)
-    state = db.Column(db.String(24), nullable=False, default="reserved")
-    trial_charge = db.Column(db.Boolean, nullable=False, default=False)
-    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-
-class NetworkPremiumInvoice(db.Model):
-    __tablename__ = "network_premium_invoice"
-    id = db.Column(db.Integer, primary_key=True)
-    invoice_code = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    email = db.Column(db.String(255), nullable=False, index=True)
-    site_slug = db.Column(db.String(64), nullable=False, default="ultima-network")
-    amount_eur = db.Column(db.Numeric(10, 2), nullable=False)
-    btc_eur_rate = db.Column(db.Numeric(20, 2), nullable=False)
-    expected_sats = db.Column(db.BigInteger, nullable=False)
-    wallet_address = db.Column(db.String(128), nullable=False)
-    network = db.Column(db.String(32), nullable=False, default="Bitcoin mainnet")
-    txid = db.Column(db.String(64), unique=True, nullable=True, index=True)
-    paid_amount_sats = db.Column(db.BigInteger, nullable=True)
-    confirmations = db.Column(db.Integer, nullable=False, default=0)
-    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
-    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
-    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    paid_until = db.Column(db.DateTime(timezone=True), nullable=True)
-    verification_note = db.Column(db.String(500), default="", nullable=False)
-
-
 global_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="ultima-global-identity-v1")
 
 def issue_global_token(user):
