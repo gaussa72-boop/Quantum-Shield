@@ -2083,7 +2083,7 @@ button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8p
   <div class="side-foot">ULTIMA NETWORK<br><span>Getrennte Konten · Zentrale Verwaltung</span></div>
 </aside>
 <main class="main">
-  <div class="topbar"><div class="crumb">Control Center <span> / </span> <b>{{site.name}}</b></div><div class="live-pill"><span class="live-dot"></span>Verwaltungsbereich</div></div>
+  <div class="topbar"><div class="crumb">Control Center <span> / </span> <b>{{site.name}}</b></div><div class="actions"><a class="btn" href="/portal">Eigene Websites verwalten ↗</a><a class="btn secondary" href="https://ultima-central-bt56.onrender.com" target="_blank" rel="noopener noreferrer">ULTIMA Central ↗</a><a class="btn secondary" href="https://astralis-app-center.onrender.com" target="_blank" rel="noopener noreferrer">ASTRALIS App Center ↗</a><span class="live-pill"><span class="live-dot"></span>Verwaltungsbereich</span></div></div>
   <header id="overview"><h1>{{site.name}}</h1><p class="lead">Dein zentraler Arbeitsbereich für Mitglieder, Integrationen, Bestellungen und Credits.</p></header>
   <section class="stats">
     <div class="stat-card"><div class="stat-label">Mitglieder</div><div class="stat-value">{{members|length}}</div><div class="stat-note">Konten dieser Website</div></div>
