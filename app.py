@@ -2041,73 +2041,81 @@ SITE_HTML = """<!doctype html>
 <html lang="de">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{site.name}} · Mitgliederverwaltung | ULTIMA</title>
+<meta name="theme-color" content="#171717">
+<title>{{site.name}} · ULTIMA Control Center</title>
 <style>
-:root{color-scheme:dark;--bg:#212121;--sidebar:#171717;--surface:#2b2b2b;--surface2:#303030;--line:#424242;--text:#f4f4f4;--muted:#a3a3a3;--accent:#10a37f;--accent-hover:#0d8c6d;--danger:#b94a48;--radius:14px}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.layout{min-height:100vh;display:grid;grid-template-columns:252px minmax(0,1fr)}
-.sidebar{position:sticky;top:0;height:100vh;background:var(--sidebar);border-right:1px solid #303030;padding:22px 14px;display:flex;flex-direction:column;gap:22px}
-.brand{display:flex;align-items:center;gap:11px;padding:4px 8px 18px;border-bottom:1px solid #303030}.brand-mark{width:34px;height:34px;border-radius:11px;background:var(--accent);display:grid;place-items:center;font-weight:800;color:white;font-size:16px}.brand strong{font-size:15px;letter-spacing:.02em}.brand small{display:block;color:var(--muted);font-size:11px}
-.nav-label{padding:0 10px;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.nav{display:grid;gap:5px}.nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;color:#c7c7c7;text-decoration:none;transition:.15s}.nav a:hover,.nav a.active{background:#2b2b2b;color:white}.nav .ico{width:20px;text-align:center;color:#a3a3a3;font-size:16px}
-.sidebar-foot{margin-top:auto;border-top:1px solid #303030;padding:14px 9px;color:var(--muted);font-size:12px}
-.main{min-width:0;padding:34px clamp(18px,4vw,56px) 72px;max-width:1600px;width:100%;margin:0 auto}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:34px}.crumb{color:var(--muted);font-size:13px}.crumb b{color:#eee;font-weight:600}.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid #3d3d3d;background:#292929;border-radius:999px;padding:6px 11px;color:#d4d4d4;font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:#20c997}
-h1{font-size:clamp(26px,3vw,36px);line-height:1.15;letter-spacing:-.035em;margin:0 0 9px;font-weight:650}h2{font-size:19px;letter-spacing:-.02em;margin:0 0 7px;font-weight:620}h3{font-size:15px;margin:0 0 6px}.lead{color:var(--muted);margin:0 0 28px;font-size:14px}.section{margin:26px 0}.section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin-bottom:14px}.section-head p{margin:4px 0 0;color:var(--muted);font-size:13px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin:14px 0;box-shadow:0 8px 24px #00000012}.card.subtle{background:#262626}.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field{display:grid;gap:7px}.field label,.check-label{font-size:13px;color:#d4d4d4;font-weight:550}.field input,.field textarea,.field select,select,input:not([type=checkbox]),textarea{width:100%;min-width:0;background:#212121;border:1px solid #555;color:#f4f4f4;border-radius:9px;padding:11px 12px;font:inherit;outline:none}.field input:focus,.field textarea:focus,select:focus,input:focus,textarea:focus{border-color:#8a8a8a;box-shadow:0 0 0 2px #ffffff12}.checks{display:flex;gap:20px;flex-wrap:wrap;margin:18px 0}.check-label{display:flex;align-items:center;gap:9px}.check-label input{width:16px;height:16px;accent-color:var(--accent)}
-button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 15px;border:1px solid transparent;border-radius:9px;background:var(--accent);color:white;font:600 13px inherit;cursor:pointer;text-decoration:none;transition:background .15s,border-color .15s,transform .15s}button:hover,.btn:hover{background:var(--accent-hover)}button:active{transform:translateY(1px)}button.secondary,.btn.secondary{background:#383838;border-color:#555;color:#eee}button.secondary:hover,.btn.secondary:hover{background:#454545}button.danger{background:#3a2424;border-color:#704040;color:#ffb4b4}button.danger:hover{background:#503030}
-.status{display:inline-flex;padding:4px 9px;border-radius:999px;background:#173c32;color:#8de2c5;font-size:11px;font-weight:650}.muted,small{color:var(--muted)}.codebox{width:100%;min-height:120px;resize:vertical;font:12px/1.6 ui-monospace,SFMono-Regular,monospace!important;background:#1c1c1c!important;border:1px solid #4a4a4a!important;border-radius:10px;padding:14px!important;color:#d8e5df!important}
-.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px}table{width:100%;border-collapse:collapse;min-width:720px;background:#262626}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid #414141;vertical-align:middle}th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#aaa;background:#303030;white-space:nowrap}td{font-size:13px;color:#e3e3e3}tr:last-child td{border-bottom:0}tbody tr:hover{background:#303030}td form{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0}td select{width:auto;max-width:130px;padding:7px;font-size:12px}td button{padding:7px 10px;font-size:11px}.mono{font:12px ui-monospace,monospace;overflow-wrap:anywhere}.empty{padding:24px;text-align:center;color:var(--muted)}
-@media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{position:relative;height:auto;padding:12px 16px;gap:12px}.brand{padding-bottom:10px}.nav{display:flex;overflow:auto}.nav-label,.sidebar-foot{display:none}.nav a{white-space:nowrap;padding:8px 10px}.main{padding:24px 16px 50px}}
-@media(max-width:600px){.settings-grid{grid-template-columns:1fr}.card{padding:16px}.topbar{align-items:flex-start}.section-head{align-items:flex-start;flex-direction:column}.checks{gap:12px}}
+:root{color-scheme:dark;--bg:#212121;--sidebar:#171717;--panel:#2b2b2b;--panel2:#303030;--line:#414141;--text:#f5f5f5;--muted:#a1a1aa;--green:#10a37f;--green2:#0d8b6c;--red:#b85c5c;--radius:16px}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:28px}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+a{color:#8bd9c3;text-decoration:none}a:hover{color:#b5f0df}
+.shell{min-height:100vh;display:grid;grid-template-columns:248px minmax(0,1fr)}
+.sidebar{height:100vh;position:sticky;top:0;background:var(--sidebar);border-right:1px solid #303030;padding:22px 14px;display:flex;flex-direction:column;gap:22px}
+.brand{display:flex;align-items:center;gap:11px;padding:4px 8px 20px;border-bottom:1px solid #303030}.mark{width:35px;height:35px;border-radius:12px;background:var(--green);display:grid;place-items:center;font-weight:800;font-size:17px}.brand b{font-size:15px;letter-spacing:.04em}.brand small{display:block;color:var(--muted);font-size:11px}
+.nav-title{padding:0 10px;color:#777;font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}.nav{display:grid;gap:5px}.nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;color:#c8c8c8;transition:.15s}.nav a:hover,.nav a.active{background:#2b2b2b;color:#fff}.nav-icon{width:20px;text-align:center;color:#aaa;font-size:16px}.side-foot{margin-top:auto;border-top:1px solid #303030;padding:15px 9px;color:var(--muted);font-size:12px}
+.main{width:100%;max-width:1500px;min-width:0;margin:0 auto;padding:30px clamp(18px,4vw,58px) 80px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:32px}.crumb{font-size:13px;color:var(--muted)}.crumb b{color:#eee}.live-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #414141;background:#292929;padding:7px 12px;border-radius:999px;font-size:12px;color:#ddd}.live-dot{width:7px;height:7px;border-radius:50%;background:#20c997;box-shadow:0 0 10px #20c99766}
+h1{font-size:clamp(27px,3vw,36px);line-height:1.15;letter-spacing:-.04em;margin:0 0 8px;font-weight:680}h2{font-size:19px;letter-spacing:-.025em;margin:0 0 5px;font-weight:630}h3{font-size:14px;margin:0 0 5px}.muted,.section-head p,.lead{color:var(--muted)}.lead{margin:0 0 26px;font-size:14px}.section-head p{font-size:13px;margin:4px 0 0}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0 34px}.stat-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:17px 18px}.stat-label{font-size:12px;color:var(--muted)}.stat-value{font-size:26px;font-weight:650;letter-spacing:-.04em;margin-top:5px}.stat-note{font-size:11px;color:#888;margin-top:2px}
+.section{margin:34px 0}.section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin-bottom:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin:12px 0;box-shadow:0 8px 24px #00000012}.card-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.grid-two{display:grid;grid-template-columns:1fr 1fr;gap:15px}.field{display:grid;gap:7px}.field label,.check-label{font-size:13px;color:#d4d4d4;font-weight:550}
+input:not([type=checkbox]),select,textarea{width:100%;min-width:0;background:#212121;border:1px solid #555;color:#f4f4f4;border-radius:10px;padding:11px 12px;font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#888;box-shadow:0 0 0 2px #fff1}.checks{display:flex;gap:20px;flex-wrap:wrap;margin:18px 0}.check-label{display:flex;align-items:center;gap:9px}.check-label input{width:16px;height:16px;accent-color:var(--green)}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 15px;border:1px solid transparent;border-radius:10px;background:var(--green);color:#fff;font:600 13px Inter,-apple-system,sans-serif;cursor:pointer;text-decoration:none;transition:.15s}button:hover,.btn:hover{background:var(--green2)}button.secondary{background:#383838;border-color:#555;color:#eee}button.secondary:hover{background:#474747}button.danger{background:#3b2525;border-color:#704040;color:#ffbaba}button.danger:hover{background:#523030}
+.status{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:#173c32;color:#91e5c9;font-size:11px;font-weight:650}.status.off{background:#3a2929;color:#f1aaaa}.codebox{width:100%;min-height:116px;resize:vertical;font:12px/1.65 ui-monospace,SFMono-Regular,monospace!important;background:#1c1c1c!important;border:1px solid #4a4a4a!important;border-radius:11px;padding:14px!important;color:#d8e5df!important}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin:13px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;min-width:720px;background:#262626}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid #414141;vertical-align:middle}th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#aaa;background:#303030;white-space:nowrap}td{font-size:13px;color:#e3e3e3}tr:last-child td{border-bottom:0}tbody tr:hover{background:#303030}td form{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0}td select{width:auto;max-width:130px;padding:7px;font-size:12px}td button{padding:7px 10px;font-size:11px}.mono{font:12px ui-monospace,monospace;overflow-wrap:anywhere}.empty{padding:25px;text-align:center;color:var(--muted)}.hint{font-size:12px;color:var(--muted);margin-top:12px}
+@media(max-width:950px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto;padding:12px 16px;gap:12px}.brand{padding-bottom:10px}.nav{display:flex;overflow:auto}.nav-title,.side-foot{display:none}.nav a{white-space:nowrap;padding:8px 10px}.main{padding:24px 16px 56px}}
+@media(max-width:650px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-two{grid-template-columns:1fr}.card{padding:16px}.topbar{align-items:flex-start}.section-head{align-items:flex-start;flex-direction:column}}
 :focus-visible{outline:2px solid #78cdb5;outline-offset:3px}
 </style>
 </head>
 <body>
-<div class="layout">
+<div class="shell">
 <aside class="sidebar">
-  <div class="brand"><div class="brand-mark">U</div><div><strong>ULTIMA</strong><small>Control Center</small></div></div>
-  <div class="nav-label">Arbeitsbereich</div>
+  <div class="brand"><div class="mark">U</div><div><b>ULTIMA</b><small>Control Center</small></div></div>
+  <div class="nav-title">Verwaltung</div>
   <nav class="nav">
-    <a href="/admin"><span class="ico">⌂</span>Übersicht</a>
-    <a class="active" href="#settings"><span class="ico">▦</span>Website & Mitglieder</a>
-    <a href="#widget"><span class="ico">⌘</span>Integration</a>
-    <a href="#orders"><span class="ico">▤</span>Bestellungen</a>
-    <a href="#credits"><span class="ico">◈</span>Credits & Zahlungen</a>
-    <a href="#members"><span class="ico">♙</span>Mitglieder</a>
+    <a href="/admin"><span class="nav-icon">⌂</span>Übersicht</a>
+    <a class="active" href="#overview"><span class="nav-icon">▦</span>Dashboard</a>
+    <a href="#settings"><span class="nav-icon">⚙</span>Website-Einstellungen</a>
+    <a href="#widget"><span class="nav-icon">⌘</span>Integration</a>
+    <a href="#orders"><span class="nav-icon">▤</span>Bestellungen</a>
+    <a href="#credits"><span class="nav-icon">◈</span>Credits & Zahlungen</a>
+    <a href="#members"><span class="nav-icon">♙</span>Mitglieder</a>
   </nav>
-  <div class="sidebar-foot">ULTIMA Network<br><span>Getrennte Konten · Zentrale Verwaltung</span></div>
+  <div class="side-foot">ULTIMA NETWORK<br><span>Getrennte Konten · Zentrale Verwaltung</span></div>
 </aside>
 <main class="main">
-  <div class="topbar"><div class="crumb">Control Center <span> / </span> <b>{{site.name}}</b></div><div class="pill"><span class="dot"></span>Verwaltungsbereich</div></div>
-  <header><h1>{{site.name}}</h1><p class="lead">Mitglieder, Website-Integration und Bestellungen an einem Ort verwalten. Konten dieser Website bleiben von allen anderen Plattformen getrennt.</p></header>
+  <div class="topbar"><div class="crumb">Control Center <span> / </span> <b>{{site.name}}</b></div><div class="live-pill"><span class="live-dot"></span>Verwaltungsbereich</div></div>
+  <header id="overview"><h1>{{site.name}}</h1><p class="lead">Dein zentraler Arbeitsbereich für Mitglieder, Integrationen, Bestellungen und Credits.</p></header>
+  <section class="stats">
+    <div class="stat-card"><div class="stat-label">Mitglieder</div><div class="stat-value">{{members|length}}</div><div class="stat-note">Konten dieser Website</div></div>
+    <div class="stat-card"><div class="stat-label">Bestellungen</div><div class="stat-value">{{orders|length}}</div><div class="stat-note">Erfasste Bestellungen</div></div>
+    <div class="stat-card"><div class="stat-label">Credit-Käufe</div><div class="stat-value">{{payments|length}}</div><div class="stat-note">Zahlungsvorgänge</div></div>
+    <div class="stat-card"><div class="stat-label">Credit-Buchungen</div><div class="stat-value">{{ledger|length}}</div><div class="stat-note">Kontobewegungen</div></div>
+  </section>
   <section class="section" id="settings">
-    <div class="section-head"><div><h2>Website-Einstellungen</h2><p>Name, Adresse und Funktionen dieser Plattform konfigurieren.</p></div><span class="status">{{"Aktiv" if site.is_active else "Deaktiviert"}}</span></div>
+    <div class="section-head"><div><h2>Website-Einstellungen</h2><p>Grunddaten und Funktionen dieser Plattform konfigurieren.</p></div><span class="status {{'off' if not site.is_active else ''}}">{{"Aktiv" if site.is_active else "Deaktiviert"}}</span></div>
     <div class="card">
       <form method="post" action="/admin/site/{{site.slug}}/settings">
         <input type="hidden" name="csrf" value="{{csrf}}">
-        <div class="settings-grid">
+        <div class="grid-two">
           <div class="field"><label for="site-name">Website-Name</label><input id="site-name" name="name" value="{{site.name}}" required></div>
           <div class="field"><label for="site-origin">Website-URL</label><input id="site-origin" name="origin" type="url" value="{{site.origin}}" required></div>
         </div>
-        <div class="checks">
-          <label class="check-label"><input type="checkbox" name="is_active" {% if site.is_active %}checked{% endif %}> Website aktiv</label>
-          <label class="check-label"><input type="checkbox" name="membership_enabled" {% if site.membership_enabled %}checked{% endif %}> Mitglieder und Credits aktiv</label>
-        </div>
+        <div class="checks"><label class="check-label"><input type="checkbox" name="is_active" {% if site.is_active %}checked{% endif %}> Website aktiv</label><label class="check-label"><input type="checkbox" name="membership_enabled" {% if site.membership_enabled %}checked{% endif %}> Mitglieder und Credits aktiv</label></div>
         <button type="submit">Änderungen speichern <span>→</span></button>
       </form>
     </div>
   </section>
   <section class="section" id="widget">
-    <div class="section-head"><div><h2>Mitglieder-Widget</h2><p>Verbinde diese Website mit dem ULTIMA-Mitgliedersystem.</p></div></div>
+    <div class="section-head"><div><h2>Mitglieder-Widget & API</h2><p>Verbinde diese Website mit dem ULTIMA-Mitgliedersystem.</p></div></div>
     <div class="card">
-      <div class="row"><span class="status">Integrationsschlüssel {{"aktiv" if site.webhook_token_hash else "nicht vorhanden"}}</span><span class="muted">Geheimer Wert wird nicht erneut angezeigt.</span></div>
+      <div class="card-top"><strong>Website-Integration</strong><span class="status {{'off' if not site.webhook_token_hash else ''}}">Integrationsschlüssel {{'aktiv' if site.webhook_token_hash else 'nicht vorhanden'}}</span></div>
       <p class="muted">Füge diesen Code im gemeinsamen Website-Footer direkt vor <code>&lt;/body&gt;</code> ein. Mitgliederkonten bleiben pro Website getrennt.</p>
       <textarea class="codebox" readonly rows="5">{{widget_snippet}}</textarea>
       <div class="actions">
         <form method="post" action="/admin/site/{{site.slug}}/integration-token"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">{% if site.webhook_token_hash %}Token erneuern{% else %}Token erzeugen{% endif %}</button></form>
         {% if site.webhook_token_hash %}<form method="post" action="/admin/site/{{site.slug}}/integration-token/revoke" onsubmit="return confirm('Integrationstoken wirklich widerrufen? Verbundene Integrationen funktionieren danach erst mit einem neuen Token.')"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger" type="submit">Token widerrufen</button></form>{% endif %}
       </div>
-      <small>Beim Erneuern wird der bisherige Token sofort ungültig. Den neuen Token sicher in den Environment-Einstellungen der angebundenen Website hinterlegen.</small>
+      <p class="hint">Beim Erneuern wird der bisherige Token sofort ungültig. Den neuen Token sicher in den Environment-Einstellungen der angebundenen Website hinterlegen.</p>
     </div>
   </section>
   <section class="section" id="orders">
