@@ -1239,6 +1239,18 @@ button.secondary,.btn.secondary{background:#1b2a42;color:#eaf5ff;border:1px soli
 small{color:var(--muted)}.status{display:inline-block;padding:4px 9px;border-radius:20px;background:#253650;font-size:12px}
 .hidden{display:none!important}.project{border:1px solid var(--line);border-radius:13px;padding:16px;margin:10px 0;background:#0a1424}
 a{color:var(--cyan)}.notice{padding:12px;border-radius:10px;background:#14243a;margin:12px 0;white-space:pre-wrap}
+</style><style>
+/* ULTIMA Network visual refinement: layered glass panels and curved luminous accents */
+body{background:radial-gradient(ellipse at 12% 0%,#263d68 0%,transparent 42%),radial-gradient(ellipse at 88% 12%,#3b1d56 0%,transparent 38%),linear-gradient(145deg,#050812,#0b1222 55%,#090714)!important}
+main{max-width:1180px!important}
+header{position:relative;border-bottom-color:#6077a255!important}
+header:after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,#e6c77b88,#72dce888,transparent)}
+.card{border-radius:22px!important;background:linear-gradient(145deg,#17233bdf,#0d1425ed)!important;border-color:#657ca244!important;box-shadow:0 18px 55px #0005, inset 0 1px #ffffff0b!important;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+.card:hover{transform:translateY(-3px);border-color:#72dce877!important;box-shadow:0 24px 65px #0007,0 0 28px #72dce81c!important}
+button,.btn{box-shadow:0 8px 24px #0003;transition:transform .18s ease,filter .18s ease}
+button:hover,.btn:hover{transform:translateY(-1px);filter:brightness(1.08)}
+input,textarea,select{background:#07101f!important;border-color:#425878!important}
+@media(prefers-reduced-motion:reduce){.card,button,.btn{transition:none!important}.card:hover,button:hover,.btn:hover{transform:none!important}}
 </style><main><header><div><div class="brand">ULTIMA NETWORK · CENTRAL IDENTITY</div><small>Ein Konto. Deine Profile. Deine Websites.</small><a href="/mentor-chat" style="display:inline-block;margin-left:14px;padding:9px 13px;border:1px solid #e6c77b;border-radius:999px;color:#fff0c6;text-decoration:none;font-weight:700">✦ Mentor-Chat öffnen ↗</a></div><div class="row"><a href="https://ultima-central-45ne.onrender.com/">← Zum Verwaltungszentrum</a><button id="logout" class="secondary hidden">Abmelden</button></div></header>
 <section id="auth"><h1>Dein ULTIMA-Konto</h1><p class="muted">Ein zentrales Konto für dein Profil und deine registrierten Webprojekte.</p><div class="grid">
 <div class="card"><h2>Konto erstellen</h2><form id="register"><label>Anzeigename</label><input name="display_name" maxlength="120" required><label>Benutzername</label><input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]+" required><label>E-Mail</label><input name="email" type="email" required><label>Passwort (mind. 12 Zeichen)</label><input name="password" type="password" minlength="12" required><button>Konto erstellen</button></form></div>
