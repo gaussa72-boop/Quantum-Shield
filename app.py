@@ -205,6 +205,26 @@ class WebsiteProject(db.Model):
     owner = db.relationship("GlobalUser", backref=db.backref("website_projects", lazy=True, cascade="all, delete-orphan"))
 
 
+class MentorRequest(db.Model):
+    __tablename__ = "mentor_request"
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    mentor_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    topic = db.Column(db.String(180), nullable=False)
+    opening_message = db.Column(db.String(3000), nullable=False)
+    status = db.Column(db.String(24), nullable=False, default="pending", index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+class MentorMessage(db.Model):
+    __tablename__ = "mentor_message"
+    id = db.Column(db.Integer, primary_key=True)
+    request_id = db.Column(db.Integer, db.ForeignKey("mentor_request.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = db.Column(db.String(4000), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class GlobalSSOCode(db.Model):
     __tablename__ = "global_sso_code"
     id = db.Column(db.Integer, primary_key=True)
@@ -1289,6 +1309,41 @@ $("logout").onclick=()=>{token="";sessionStorage.removeItem("ultima_global_token
 if(token)refresh().then(()=>maybeSsoRedirect()).catch(e=>{token="";sessionStorage.removeItem("ultima_global_token");if(new URLSearchParams(location.search).get("site"))note(e.message)});
 </script></main></html>"""
 
+MENTOR_CHAT_HTML = r"""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Mentorraum</title>
+<style>
+:root{color-scheme:dark;--bg:#070b14;--panel:#111a2c;--line:#293b59;--gold:#e6c77b;--cyan:#72dce8;--muted:#a7b5ca}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -15%,#203858,transparent 55%),var(--bg);color:#f4f7fb;font:15px Inter,system-ui}main{max-width:1100px;margin:auto;padding:28px 18px 70px}
+header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:14px 0 20px}
+a{color:var(--cyan)}h1{font-size:clamp(28px,5vw,48px);margin:12px 0}h2{margin:0 0 12px}.muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:300px 1fr;gap:16px;margin-top:20px}.card{background:linear-gradient(145deg,#121e32,#0c1423);border:1px solid var(--line);border-radius:18px;padding:18px}
+input,textarea,select{width:100%;margin:7px 0 12px;padding:12px;border-radius:10px;border:1px solid var(--line);background:#081321;color:white}
+button{padding:10px 14px;border:0;border-radius:10px;background:linear-gradient(100deg,var(--gold),#f5e7ba);color:#171a21;font-weight:750;cursor:pointer}
+button.secondary{background:#1b2a42;color:#eaf5ff;border:1px solid #3b5577}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.list{display:grid;gap:9px}.entry{padding:12px;border:1px solid var(--line);border-radius:12px;background:#0a1424}.entry button{margin-top:8px}.messages{height:340px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:12px;background:#081321}.msg{padding:9px 12px;margin:7px 0;border-radius:12px;max-width:85%;background:#1b2a42;white-space:pre-wrap;overflow-wrap:anywhere}.msg.mine{margin-left:auto;background:#263d55}.hidden{display:none!important}.notice{padding:10px 12px;border-radius:10px;background:#14243a;margin:12px 0;white-space:pre-wrap}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.messages{height:260px}}
+</style><main><header><div><div class="muted">ULTIMA NETWORK · CENTRAL IDENTITY</div><h1>Mentorraum</h1><p class="muted">Stelle eine Anfrage an ein freigegebenes Mentorprofil. Der private Chat wird erst nach Annahme durch den Mentor geöffnet.</p></div><div class="row"><a href="/portal">Profil & Netzwerk ↗</a><a href="https://ate-rea-characterverse.onrender.com">Zur Charakter-KI ↗</a></div></header>
+<div id="notice" class="notice">Prüfe deine ULTIMA-Anmeldung …</div><section id="workspace" class="grid hidden">
+<aside class="card"><h2>Freigegebene Mentoren</h2><div id="mentors" class="list"></div><h2 style="margin-top:22px">Deine Anfragen</h2><div id="requests" class="list"></div></aside>
+<section class="card"><h2 id="chatTitle">Wähle einen Mentor oder eine Unterhaltung</h2><form id="requestForm" class="hidden"><label>Thema</label><input name="topic" maxlength="180" required><label>Nachricht</label><textarea name="message" maxlength="3000" rows="4" required></textarea><button>Anfrage senden</button></form>
+<div id="chatArea" class="hidden"><div id="messages" class="messages"></div><form id="sendForm" class="row" style="margin-top:12px"><input name="message" maxlength="4000" placeholder="Nachricht schreiben …" required style="flex:1"><button>Senden</button></form></div></section></section>
+<script>
+const API="https://ultima-membership-api.onrender.com";const token=sessionStorage.getItem("ultima_global_token");let current=null,mentors=[];
+const $=id=>document.getElementById(id);const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path,method="GET",body){const r=await fetch(API+path,{method,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||"Anfrage fehlgeschlagen ("+r.status+")");return d}
+function note(t){$("notice").textContent=t}
+async function refresh(){const d=await api("/api/global/mentors");mentors=d.mentors||[];$("mentors").innerHTML=mentors.length?mentors.map(m=>'<article class="entry"><b>'+esc(m.name)+'</b><p class="muted">'+esc(m.bio||"ULTIMA Mentorprofil")+'</p><button data-mentor="'+m.id+'">Anfrage stellen</button></article>').join(""):'<p class="muted">Aktuell ist noch kein Mentorprofil freigegeben. Der ULTIMA-Inhaber wird angezeigt, sobald sein Netzwerkkonto angelegt ist.</p>';const q=await api("/api/global/mentor-requests");$("requests").innerHTML=(q.requests||[]).map(x=>'<article class="entry"><b>'+esc(x.topic)+'</b><p class="muted">'+esc(x.sender.name)+' → '+esc(x.mentor.name)+' · '+esc(x.status)+'</p>'+(x.status==="pending"&&x.is_mentor?'<button data-accept="'+x.id+'">Anfrage annehmen</button>':'')+(x.status==="accepted"?'<button class="secondary" data-open="'+x.id+'">Chat öffnen</button>':'')+'</article>').join("")||'<p class="muted">Noch keine Anfragen.</p>'}
+$("mentors").addEventListener("click",e=>{const b=e.target.closest("[data-mentor]");if(!b)return;const m=mentors.find(x=>x.id===Number(b.dataset.mentor));if(!m)return;current={mentor_id:m.id};$("chatTitle").textContent="Anfrage an "+m.name;$("requestForm").classList.remove("hidden");$("chatArea").classList.add("hidden")});
+$("requests").addEventListener("click",async e=>{const a=e.target.closest("[data-accept]"),o=e.target.closest("[data-open]");try{if(a){await api("/api/global/mentor-requests/"+a.dataset.accept+"/accept","POST",{});await refresh();note("Anfrage angenommen. Der private Chat ist freigeschaltet.")}if(o){current={id:Number(o.dataset.open)};$("requestForm").classList.add("hidden");$("chatArea").classList.remove("hidden");await loadMessages()}}catch(err){note(err.message)}});
+async function loadMessages(){if(!current?.id)return;const d=await api("/api/global/mentor-requests/"+current.id+"/messages");$("messages").innerHTML=(d.messages||[]).map(m=>'<div class="msg '+(m.sender_id===window.__USER_ID?"mine":"")+'">'+esc(m.body)+'</div>').join("");$("messages").scrollTop=$("messages").scrollHeight}
+$("requestForm").onsubmit=async e=>{e.preventDefault();try{const f=e.target;await api("/api/global/mentor-requests","POST",{mentor_id:current.mentor_id,topic:f.topic.value,message:f.message.value});f.reset();f.classList.add("hidden");await refresh();note("Mentor-Anfrage wurde gesendet. Der Chat öffnet sich nach Annahme.")}catch(err){note(err.message)}};
+$("sendForm").onsubmit=async e=>{e.preventDefault();try{const f=e.target;await api("/api/global/mentor-requests/"+current.id+"/messages","POST",{message:f.message.value});f.reset();await loadMessages()}catch(err){note(err.message)}};
+(async()=>{if(!token){note("Bitte zuerst im ULTIMA-Netzwerk anmelden und danach den Mentorraum erneut öffnen.");return}try{const me=await api("/api/global/me");window.__USER_ID=me.user.id;$("workspace").classList.remove("hidden");await refresh();note("Verbunden mit deinem ULTIMA-Netzwerkprofil.")}catch(e){note(e.message+" · Bitte im Netzwerkportal erneut anmelden.")}})();
+</script></main>""" 
+
+@app.get("/mentor-chat")
+def mentor_chat_page():
+    return render_template_string(MENTOR_CHAT_HTML)
+
 @app.get("/portal")
 def global_portal():
     return render_template_string(GLOBAL_PORTAL_HTML)
@@ -1495,6 +1550,124 @@ def global_public_projects():
     projects = WebsiteProject.query.filter_by(is_public=True, status="published").order_by(WebsiteProject.updated_at.desc()).limit(500).all()
     return jsonify(projects=[{"id": p.id, "name": p.name, "slug": p.slug, "url": p.url, "description": p.description, "category": p.category, "owner": p.owner.display_name or p.owner.username, "status": p.status} for p in projects])
 
+
+def mentor_request_payload(item, viewer_id):
+    sender = db.session.get(GlobalUser, item.sender_id)
+    mentor = db.session.get(GlobalUser, item.mentor_id)
+    return {
+        "id": item.id, "topic": item.topic, "opening_message": item.opening_message,
+        "status": item.status, "created_at": item.created_at.isoformat(),
+        "is_mentor": viewer_id == item.mentor_id,
+        "sender": {"id": sender.id, "name": sender.display_name or sender.username, "username": sender.username} if sender else None,
+        "mentor": {"id": mentor.id, "name": mentor.display_name or mentor.username, "username": mentor.username} if mentor else None
+    }
+
+@app.get("/api/global/mentors")
+@limiter.limit("60 per hour")
+def global_mentors():
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    mentors = GlobalUser.query.filter(
+        GlobalUser.status == "active",
+        ((GlobalUser.role == "mentor") | (func.lower(GlobalUser.email) == ADMIN_OWNER_EMAIL))
+    ).order_by(GlobalUser.display_name.asc()).limit(100).all()
+    return jsonify(mentors=[{"id": m.id, "name": m.display_name or m.username, "username": m.username,
+                             "bio": m.bio, "avatar_url": m.avatar_url,
+                             "is_owner": bool(ADMIN_OWNER_EMAIL and m.email.lower() == ADMIN_OWNER_EMAIL)}
+                            for m in mentors])
+
+@app.post("/api/global/mentor-requests")
+@limiter.limit("10 per hour")
+def global_mentor_request_create():
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        mentor_id = int(data.get("mentor_id"))
+    except (TypeError, ValueError):
+        return jsonify(error="Bitte einen Mentor auswählen."), 400
+    topic = str(data.get("topic", "")).strip()
+    opening = str(data.get("message", "")).strip()
+    if not topic or len(topic) > 180 or not opening or len(opening) > 3000:
+        return jsonify(error="Thema (max. 180 Zeichen) und Nachricht (max. 3000 Zeichen) sind erforderlich."), 400
+    mentor = db.session.get(GlobalUser, mentor_id)
+    allowed_mentor = bool(mentor and mentor.status == "active" and (
+        mentor.role == "mentor" or (ADMIN_OWNER_EMAIL and mentor.email.lower() == ADMIN_OWNER_EMAIL)
+    ))
+    if not allowed_mentor:
+        return jsonify(error="Dieses Profil ist derzeit nicht als Mentor freigegeben."), 403
+    if mentor.id == viewer.id:
+        return jsonify(error="Du kannst keine Mentor-Anfrage an dein eigenes Profil senden."), 400
+    item = MentorRequest(sender_id=viewer.id, mentor_id=mentor.id, topic=topic, opening_message=opening, status="pending")
+    db.session.add(item)
+    db.session.commit()
+    audit("global:" + viewer.email, "mentor.request.created", None, str(item.id))
+    return jsonify(ok=True, request=mentor_request_payload(item, viewer.id)), 201
+
+@app.get("/api/global/mentor-requests")
+@limiter.limit("60 per hour")
+def global_mentor_requests():
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    items = MentorRequest.query.filter(
+        (MentorRequest.sender_id == viewer.id) | (MentorRequest.mentor_id == viewer.id)
+    ).order_by(MentorRequest.updated_at.desc()).limit(100).all()
+    return jsonify(requests=[mentor_request_payload(item, viewer.id) for item in items])
+
+@app.post("/api/global/mentor-requests/<int:request_id>/accept")
+@limiter.limit("30 per hour")
+def global_mentor_request_accept(request_id):
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    item = db.session.get(MentorRequest, request_id)
+    if not item or item.mentor_id != viewer.id:
+        return jsonify(error="Mentor-Anfrage nicht gefunden."), 404
+    if item.status != "pending":
+        return jsonify(error="Diese Anfrage wurde bereits bearbeitet."), 409
+    item.status = "accepted"
+    item.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    audit("global:" + viewer.email, "mentor.request.accepted", None, str(item.id))
+    return jsonify(ok=True, request=mentor_request_payload(item, viewer.id))
+
+@app.get("/api/global/mentor-requests/<int:request_id>/messages")
+@limiter.limit("120 per hour")
+def global_mentor_messages(request_id):
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    item = db.session.get(MentorRequest, request_id)
+    if not item or viewer.id not in (item.sender_id, item.mentor_id):
+        return jsonify(error="Unterhaltung nicht gefunden."), 404
+    if item.status != "accepted":
+        return jsonify(error="Der Chat wird erst nach beidseitiger Annahme freigeschaltet."), 403
+    messages = MentorMessage.query.filter_by(request_id=item.id).order_by(MentorMessage.created_at.asc()).limit(300).all()
+    return jsonify(messages=[{"id": m.id, "sender_id": m.sender_id, "body": m.body, "created_at": m.created_at.isoformat()} for m in messages])
+
+@app.post("/api/global/mentor-requests/<int:request_id>/messages")
+@limiter.limit("60 per hour")
+def global_mentor_message_send(request_id):
+    viewer = current_global_user()
+    if not viewer:
+        return jsonify(error="Bitte zuerst im ULTIMA-Netzwerk anmelden."), 401
+    item = db.session.get(MentorRequest, request_id)
+    if not item or viewer.id not in (item.sender_id, item.mentor_id):
+        return jsonify(error="Unterhaltung nicht gefunden."), 404
+    if item.status != "accepted":
+        return jsonify(error="Der Chat wird erst nach Annahme der Mentor-Anfrage freigeschaltet."), 403
+    data = request.get_json(silent=True) or {}
+    body = str(data.get("message", "")).strip()
+    if not body or len(body) > 4000:
+        return jsonify(error="Nachricht muss zwischen 1 und 4000 Zeichen lang sein."), 400
+    msg = MentorMessage(request_id=item.id, sender_id=viewer.id, body=body)
+    item.updated_at = datetime.now(timezone.utc)
+    db.session.add(msg)
+    db.session.commit()
+    return jsonify(ok=True, message={"id": msg.id, "sender_id": msg.sender_id, "body": msg.body, "created_at": msg.created_at.isoformat()}), 201
 
 @app.get("/api/global/premium/status")
 def global_premium_status():
