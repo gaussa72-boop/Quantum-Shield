@@ -54,3 +54,32 @@
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+
+/* ULTIMA shared floating-action layout: one reserved vertical slot per control */
+#ultima-launch{position:fixed!important;right:18px!important;bottom:18px!important;z-index:2147483000!important}
+#ultima-global-launch{position:fixed!important;right:18px!important;bottom:76px!important;z-index:2147483000!important}
+#aurealis-launch{position:fixed!important;right:18px!important;bottom:134px!important;z-index:2147483000!important}
+#ultima-support-button{position:fixed!important;right:18px!important;bottom:192px!important;z-index:2147483000!important}
+#humanitarian-donation-launch{position:fixed!important;right:18px!important;bottom:250px!important;z-index:2147483000!important}
+#ai-tools-dock{position:fixed!important;right:18px!important;bottom:308px!important;z-index:2147483000!important;max-height:calc(100dvh - 326px)!important}
+#ai-tools-dock details{max-height:calc(100dvh - 326px)!important;overflow:hidden}
+#ai-tools-dock .ai-tools-panel{max-height:calc(100dvh - 390px)!important;overflow-y:auto!important}
+#project-ai-studio-link{position:fixed!important;top:76px!important;right:18px!important;z-index:2147483000!important}
+#ultima-panel,#humanitarian-donation-panel{position:fixed!important;right:82px!important;bottom:18px!important;max-height:calc(100dvh - 36px)!important;overflow-y:auto!important;z-index:2147483001!important}
+#ultima-launch:focus-visible,#ultima-global-launch:focus-visible,#aurealis-launch:focus-visible,#ultima-support-button:focus-visible,#humanitarian-donation-launch:focus-visible,#project-ai-studio-link:focus-visible{outline:3px solid #7dd3fc!important;outline-offset:3px!important}
+@media(max-width:700px){
+ #ultima-launch{right:10px!important;bottom:10px!important}
+ #ultima-global-launch{right:10px!important;bottom:64px!important}
+ #aurealis-launch{right:10px!important;bottom:118px!important}
+ #ultima-support-button{right:10px!important;bottom:172px!important}
+ #humanitarian-donation-launch{right:10px!important;bottom:226px!important}
+ #ai-tools-dock{right:10px!important;bottom:280px!important;max-height:calc(100dvh - 292px)!important}
+ #ai-tools-dock details{max-height:calc(100dvh - 292px)!important}
+ #ai-tools-dock .ai-tools-panel{max-height:calc(100dvh - 350px)!important}
+ #project-ai-studio-link{top:64px!important;right:10px!important}
+ #ultima-panel,#humanitarian-donation-panel{left:12px!important;right:12px!important;top:12px!important;bottom:auto!important;width:auto!important;max-height:calc(100dvh - 24px)!important}
+}
+@media(max-height:620px){
+ #ultima-launch,#ultima-global-launch,#aurealis-launch,#ultima-support-button,#humanitarian-donation-launch{transform:scale(.9);transform-origin:right bottom}
+}
