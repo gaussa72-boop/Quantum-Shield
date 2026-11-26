@@ -2620,3 +2620,8 @@ def cyber_shield_scan():
     db.session.commit()
     audit("admin:" + session.get("admin_email", ADMIN_OWNER_EMAIL), "cyber_shield.scan", None, json.dumps({"sites": len(rows), "warnings": sum(1 for x in rows if not x["http"] or x["score"] < 80)}))
     return redirect(url_for("cyber_shield_home"))
+
+
+# Register the ULTIMA company administration sub-app.
+from company_desk import bp as ultima_company_bp
+app.register_blueprint(ultima_company_bp)
