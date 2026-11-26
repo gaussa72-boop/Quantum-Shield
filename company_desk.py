@@ -5,12 +5,16 @@ from flask import Blueprint, request, render_template_string, redirect, abort, s
 from sqlalchemy import func
 
 bp = Blueprint("ultima_company", __name__)
+_MODEL_CACHE = None
 
 def _ctx():
     from app import db, admin_required, admin_csrf_ok, audit, ADMIN_OWNER_EMAIL, BTC_ADDRESS
     return db, audit, ADMIN_OWNER_EMAIL, BTC_ADDRESS
 
 def _models():
+    global _MODEL_CACHE
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
     from app import db, StoreOrder, CryptoPayment, NetworkPremiumInvoice, WebsiteProject, GlobalUser
     class Invoice(db.Model):
         __tablename__ = "ultima_company_invoice"
@@ -47,7 +51,8 @@ def _models():
         status=db.Column(db.String(24),default="review",nullable=False,index=True)
         created_at=db.Column(db.DateTime(timezone=True),default=lambda:datetime.now(timezone.utc),nullable=False)
     db.create_all()
-    return db, Invoice, Loan, Idea, StoreOrder, CryptoPayment, NetworkPremiumInvoice, WebsiteProject, GlobalUser
+    _MODEL_CACHE = (db, Invoice, Loan, Idea, StoreOrder, CryptoPayment, NetworkPremiumInvoice, WebsiteProject, GlobalUser)
+    return _MODEL_CACHE
 
 PAGE = """<!doctype html><html lang=de><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>ULTIMA Company Desk</title><style>
 :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#080d18;color:#eef3ff;font:15px system-ui}header{padding:20px 4vw;border-bottom:1px solid #263650;display:flex;justify-content:space-between}main{max-width:1400px;margin:28px auto;padding:0 18px}.muted{color:#9cabc4}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}.card{background:#111a2b;border:1px solid #2a3b58;border-radius:16px;padding:18px;margin:14px 0}.stat{font-size:28px;font-weight:800}input,select,textarea{background:#0b1322;color:#fff;border:1px solid #344762;border-radius:9px;padding:10px;width:100%;margin:5px 0 12px}button,.btn{background:#17627a;color:#fff;border:0;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}button.paid{background:#16734d}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:10px;border-bottom:1px solid #2a3b58;vertical-align:top}a{color:#8bd9ec}.tabs{display:flex;gap:8px;flex-wrap:wrap}.pill{padding:5px 9px;border-radius:99px;background:#253550}.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.invoice{max-width:100px;max-height:80px}</style>
