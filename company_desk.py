@@ -5,6 +5,7 @@ from flask import Blueprint, request, render_template_string, redirect, abort, s
 from sqlalchemy import func
 
 bp = Blueprint("ultima_company", __name__)
+from app import admin_required
 _MODEL_CACHE = None
 
 def _ctx():
@@ -74,6 +75,7 @@ def _guard():
     if not admin_csrf_ok(): abort(400)
 
 @bp.get("/admin/company")
+@admin_required
 def home():
     from app import admin_required, StoreOrder, CryptoPayment, NetworkPremiumInvoice, WebsiteProject, GlobalUser, CompanyInvoice
     # Decorator is applied here to preserve the central owner-only admin session.
@@ -84,6 +86,7 @@ def _home_render():
     return redirect("/admin/company/dashboard")
 
 @bp.get("/admin/company/dashboard")
+@admin_required
 def dashboard():
     from app import admin_required, db, StoreOrder, CryptoPayment, NetworkPremiumInvoice, WebsiteProject, GlobalUser, ADMIN_OWNER_EMAIL, BTC_ADDRESS, session
     return _dashboard()
