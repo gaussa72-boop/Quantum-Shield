@@ -5,7 +5,8 @@ import secrets
 import hmac
 import smtplib
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation, ROUND_UP
 from functools import wraps
 
@@ -174,6 +175,29 @@ class PremiumApplication(db.Model):
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
 
+
+class MembershipApplication(db.Model):
+    __tablename__ = "membership_application"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    username = db.Column(db.String(48), nullable=False)
+    site_slug = db.Column(db.String(64), default="global", nullable=False, index=True)
+    message = db.Column(db.String(2000), default="", nullable=False)
+    status = db.Column(db.String(24), default="pending", nullable=False, index=True)
+    reviewed_by = db.Column(db.String(255), nullable=True)
+    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class HolidayAccess(db.Model):
+    __tablename__ = "holiday_access"
+    id = db.Column(db.Integer, primary_key=True)
+    holiday_date = db.Column(db.Date, unique=True, nullable=False, index=True)
+    label = db.Column(db.String(120), nullable=False)
+    enabled = db.Column(db.Boolean, default=False, nullable=False)
+    full_access = db.Column(db.Boolean, default=True, nullable=False)
+    updated_by = db.Column(db.String(255), nullable=True)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
 class GlobalUser(db.Model):
     __tablename__ = "global_user"
@@ -346,6 +370,10 @@ def premium_account_for(email, start_trial=False):
         account.trial_used = 0
     return account
 
+def holiday_test_day_active():
+    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    return bool(HolidayAccess.query.filter_by(holiday_date=today, enabled=True, full_access=True).first())
+
 def premium_status_payload(email, start_trial=False):
     normalized = str(email or "").strip().lower()
     now = datetime.now(timezone.utc)
@@ -362,6 +390,13 @@ def premium_status_payload(email, start_trial=False):
                 "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
                 "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":False,
                 "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK}
+    if holiday_test_day_active():
+        return {"status":"holiday_test_day","active":True,"can_use":True,"lifetime":False,
+                "trial_days_remaining":1,"trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,
+                "trial_remaining":PREMIUM_TRIAL_USES,"paid_until":None,
+                "price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),"period_days":PREMIUM_PERIOD_DAYS,
+                "checkout_ready":False,"wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
+                "message":"Zeitlich begrenzter Vollzugriff-Testtag ist heute durch die Administration aktiviert."}
     if not premium_public_enabled():
         return {"status":"restricted","active":False,"can_use":False,"lifetime":False,
                 "trial_days_remaining":0,"trial_limit":0,"trial_used":0,"trial_remaining":0,
@@ -396,6 +431,8 @@ def premium_reserve_usage(email, site_slug, feature, request_id):
         return True, {"already_reserved":True,"trial":existing.trial_charge}
     if premium_owner_or_selected(normalized):
         return True, {"lifetime":True,"trial":False,"allowlisted":True}
+    if holiday_test_day_active():
+        return True, {"status":"holiday_test_day","trial":False}
     if not premium_public_enabled():
         return False, {"status":"restricted","error":"Premium ist derzeit nur für den Superadmin und ausdrücklich freigeschaltete Mitglieder verfügbar."}
     account = premium_account_for(normalized, start_trial=True)
@@ -759,6 +796,13 @@ def register(slug):
     raw_code = str(data.get("registration_code", "")).strip()
     if not raw_code or len(raw_code) > 100:
         return jsonify(error="Ein gültiger, einmaliger Registrierungscode ist erforderlich."), 400
+    approved_application = MembershipApplication.query.filter(
+        func.lower(MembershipApplication.email) == email,
+        MembershipApplication.status == "approved",
+        MembershipApplication.site_slug.in_(["global", slug])
+    ).order_by(MembershipApplication.reviewed_at.desc()).first()
+    if not (ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL) and not approved_application:
+        return jsonify(error="Vor der Registrierung ist ein genehmigter Mitgliedschaftsantrag erforderlich."), 403
     code_hash = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
     invite = RegistrationCode.query.filter_by(site_id=site.id, code_hash=code_hash).with_for_update().first()
     now = datetime.now(timezone.utc)
@@ -1438,6 +1482,10 @@ def global_register():
     if GlobalUser.query.filter(func.lower(GlobalUser.username) == username.lower()).first():
         return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
     role = "owner" if ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL else "member"
+    approved_application = MembershipApplication.query.filter(func.lower(MembershipApplication.email) == email,
+        MembershipApplication.status == "approved", MembershipApplication.site_slug == "global").first()
+    if role != "owner" and not approved_application:
+        return jsonify(error="Vor der Kontoerstellung ist ein genehmigter Mitgliedschaftsantrag erforderlich."), 403
     user = GlobalUser(email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=display_name, role=role)
     db.session.add(user)
     db.session.flush()
@@ -1461,6 +1509,8 @@ def global_register():
                     db.session.add(WebsiteProject(owner_id=user.id, name=str(item.get("name", slug))[:120], slug=slug,
                         url=project_url, description="Aus dem bestehenden ULTIMA-Website-Verzeichnis übernommen.",
                         category="Website", status="draft", is_public=False))
+    if approved_application:
+        approved_application.status = "registered"
     db.session.commit()
     audit("global:" + email, "global.register", None, str(user.id))
     return jsonify(ok=True, token=issue_global_token(user), user={"id": user.id, "email": user.email, "username": user.username, "display_name": user.display_name, "role": user.role}), 201
@@ -2004,6 +2054,91 @@ def send_premium_email(to_email, subject, body):
         app.logger.warning("Premium email failed: %s", type(exc).__name__)
         return False
 
+@app.get("/membership-apply")
+def membership_apply_page():
+    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mitgliedschaftsantrag · ULTIMA</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:620px;margin:7vh auto;padding:24px"><h1>Mitgliedschaft beantragen</h1><p>Der Zugang zu Websites, KI-Systemen und Community-Funktionen bleibt bis zur Prüfung gesperrt. Nach Genehmigung kannst du dein Konto erstellen.</p><form id="apply"><label>Name</label><input name="name" required maxlength="160" style="display:block;width:100%;padding:12px;margin:8px 0"><label>E-Mail</label><input name="email" type="email" required maxlength="255" style="display:block;width:100%;padding:12px;margin:8px 0"><label>Gewünschter Benutzername</label><input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]+" style="display:block;width:100%;padding:12px;margin:8px 0"><label>Website / Bereich</label><select name="site_slug" style="display:block;width:100%;padding:12px;margin:8px 0"><option value="global">Alle freigegebenen ULTIMA-Websites</option>{% for s in sites %}<option value="{{s.slug}}">{{s.name}}</option>{% endfor %}</select><label>Nachricht / Begründung</label><textarea name="message" maxlength="2000" style="display:block;width:100%;padding:12px;margin:8px 0"></textarea><button style="padding:12px 18px">Antrag senden</button></form><p id="out" aria-live="polite"></p><script>document.getElementById('apply').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;const data=Object.fromEntries(new FormData(f));const r=await fetch('/api/membership/applications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const d=await r.json();document.getElementById('out').textContent=d.message||d.error||'Anfrage fehlgeschlagen';if(r.ok)f.reset()}</script></body></html>""", sites=Site.query.filter_by(is_active=True,membership_enabled=True).order_by(Site.name).all())
+
+@app.post("/api/membership/applications")
+@limiter.limit("5 per hour")
+def membership_application_create():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()[:160]
+    email = str(data.get("email", "")).strip().lower()
+    username = str(data.get("username", "")).strip()
+    site_slug = str(data.get("site_slug", "global")).strip().lower()[:64] or "global"
+    message = str(data.get("message", "")).strip()[:2000]
+    if not name or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email) or len(email)>255:
+        return jsonify(error="Bitte Name und gültige E-Mail-Adresse angeben."),400
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
+        return jsonify(error="Benutzername: 3–32 Zeichen, Buchstaben, Zahlen, Punkt, _ oder -."),400
+    if site_slug != "global" and not Site.query.filter_by(slug=site_slug,is_active=True,membership_enabled=True).first():
+        return jsonify(error="Dieser Website-Bereich ist derzeit nicht für Anträge geöffnet."),404
+    existing = MembershipApplication.query.filter(func.lower(MembershipApplication.email)==email,
+        MembershipApplication.site_slug==site_slug, MembershipApplication.status.in_(["pending","approved"])).first()
+    if existing:
+        return jsonify(error="Für diese E-Mail besteht bereits ein offener oder genehmigter Antrag.",application_id=existing.id,status=existing.status),409
+    application=MembershipApplication(name=name,email=email,username=username,site_slug=site_slug,message=message)
+    db.session.add(application); db.session.commit()
+    audit("applicant:"+email,"membership.application_submitted",site_slug,str(application.id))
+    return jsonify(ok=True,application_id=application.id,status="pending",message="Antrag eingegangen. Konto und Vollzugriff bleiben bis zur ausdrücklichen Genehmigung gesperrt."),201
+
+@app.get("/admin/memberships")
+@admin_required
+def admin_memberships():
+    items=MembershipApplication.query.order_by(MembershipApplication.created_at.desc()).limit(500).all()
+    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mitgliedschaftsanträge · ULTIMA</title><body style="font:14px system-ui;background:#080b14;color:#edf1ff;max-width:1200px;margin:28px auto;padding:18px"><h1>Mitgliedschaftsanträge</h1><p><a style="color:#8ce4f0" href="/admin">← Control Center</a> · <a style="color:#8ce4f0" href="/admin/holiday-access">Feiertags-Testtage →</a></p><table width="100%" cellpadding="10" style="border-collapse:collapse;background:#11182a"><tr><th>Name / E-Mail</th><th>Benutzername</th><th>Bereich</th><th>Nachricht</th><th>Status</th><th>Aktion</th></tr>{% for a in items %}<tr><td>{{a.name}}<br>{{a.email}}</td><td>{{a.username}}</td><td>{{a.site_slug}}</td><td>{{a.message}}</td><td>{{a.status}}</td><td>{% if a.status=='pending' %}<form method="post" action="/admin/memberships/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><button>Genehmigen</button></form><form method="post" action="/admin/memberships/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">Keine Anträge.</td></tr>{% endfor %}</table></body></html>""",items=items,csrf=session["csrf"])
+
+@app.post("/admin/memberships/<int:application_id>/<action>")
+@admin_required
+def admin_membership_decision(application_id,action):
+    if not admin_csrf_ok(): abort(400)
+    if action not in {"approve","reject"}: abort(404)
+    item=db.session.get(MembershipApplication,application_id)
+    if not item: abort(404)
+    if item.status!="pending": return jsonify(error="Antrag wurde bereits bearbeitet."),409
+    item.status="approved" if action=="approve" else "rejected"
+    item.reviewed_by=session.get("admin_email",ADMIN_OWNER_EMAIL)
+    item.reviewed_at=datetime.now(timezone.utc)
+    db.session.commit()
+    audit("admin:"+session.get("admin_email",ADMIN_OWNER_EMAIL),"membership."+action,item.site_slug,str(item.id))
+    return redirect(url_for("admin_memberships"))
+
+@app.get("/admin/holiday-access")
+@admin_required
+def admin_holiday_access():
+    items=HolidayAccess.query.order_by(HolidayAccess.holiday_date.desc()).limit(100).all()
+    today=datetime.now(ZoneInfo("Europe/Berlin")).date()
+    active=holiday_test_day_active()
+    return render_template_string("""<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feiertags-Testtage · ULTIMA</title><body style="font:14px system-ui;background:#080b14;color:#edf1ff;max-width:1000px;margin:28px auto;padding:18px"><h1>Feiertags-Vollzugriff / Testtag</h1><p>Der Vollzugriff ist nur am eingetragenen Datum in Europe/Berlin aktiv und nur für bereits genehmigte Mitglieder. Er ersetzt keinen Mitgliedschaftsantrag und erteilt keine Adminrechte.</p><p>Status heute ({{today}}): <b>{{'AKTIV' if active else 'INAKTIV'}}</b></p><form method="post" action="/admin/holiday-access/create"><input type="hidden" name="csrf" value="{{csrf}}"><input type="date" name="holiday_date" required><input name="label" maxlength="120" placeholder="Feiertag / Anlass" required><button>Feiertag anlegen</button></form><table width="100%" cellpadding="10"><tr><th>Datum</th><th>Anlass</th><th>Vollzugriff</th><th>Aktion</th></tr>{% for h in items %}<tr><td>{{h.holiday_date}}</td><td>{{h.label}}</td><td>{{'Aktiviert' if h.enabled else 'Deaktiviert'}}</td><td><form method="post" action="/admin/holiday-access/{{h.id}}/toggle"><input type="hidden" name="csrf" value="{{csrf}}"><button>{{'Deaktivieren' if h.enabled else 'Aktivieren'}}</button></form></td></tr>{% else %}<tr><td colspan="4">Noch keine Feiertage hinterlegt.</td></tr>{% endfor %}</table></body></html>""",items=items,today=today,active=active,csrf=session["csrf"])
+
+@app.post("/admin/holiday-access/create")
+@admin_required
+def admin_holiday_access_create():
+    if not admin_csrf_ok(): abort(400)
+    try: holiday_date=date.fromisoformat(request.form.get("holiday_date",""))
+    except ValueError: return jsonify(error="Ungültiges Datum."),400
+    label=request.form.get("label","").strip()[:120]
+    if not label: return jsonify(error="Bezeichnung erforderlich."),400
+    item=HolidayAccess.query.filter_by(holiday_date=holiday_date).first()
+    if item: item.label=label
+    else: item=HolidayAccess(holiday_date=holiday_date,label=label,enabled=False); db.session.add(item)
+    db.session.commit()
+    audit("admin:"+session.get("admin_email",ADMIN_OWNER_EMAIL),"holiday_access.created",None,holiday_date.isoformat())
+    return redirect(url_for("admin_holiday_access"))
+
+@app.post("/admin/holiday-access/<int:holiday_id>/toggle")
+@admin_required
+def admin_holiday_access_toggle(holiday_id):
+    if not admin_csrf_ok(): abort(400)
+    item=db.session.get(HolidayAccess,holiday_id)
+    if not item: abort(404)
+    item.enabled=not item.enabled
+    item.updated_by=session.get("admin_email",ADMIN_OWNER_EMAIL)
+    item.updated_at=datetime.now(timezone.utc)
+    db.session.commit()
+    audit("admin:"+session.get("admin_email",ADMIN_OWNER_EMAIL),"holiday_access.toggled",None,json.dumps({"date":item.holiday_date.isoformat(),"enabled":item.enabled}))
+    return redirect(url_for("admin_holiday_access"))
+
 @app.post("/api/premium/applications")
 @limiter.limit("5 per hour")
 def premium_application_create():
@@ -2388,7 +2523,7 @@ WALLETS_ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><me
 
 BUSINESS_STUDIO_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Business Studio</title><style>body{margin:0;background:radial-gradient(ellipse at 60% -20%,#26395d,transparent 55%),#080b14;color:#edf1ff;font:15px system-ui}main{max-width:1200px;margin:28px auto;padding:0 18px}header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}a{color:#8ce4f0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;min-width:0}.muted{color:#a8b4cd;font-size:12px}.stat{font-size:28px;font-weight:800}.pill{display:inline-block;padding:4px 8px;border:1px solid #3b5970;border-radius:99px;color:#9fe7e9;font-size:11px}.url{overflow-wrap:anywhere}.section{margin:28px 0}.wallet{background:linear-gradient(120deg,#1a2940,#10212d);border-color:#78653c}</style><main><header><div><h1>✦ ULTIMA Business Studio</h1><p class="muted">Deine eigene Polsia-inspirierte Verwaltungszentrale für Unternehmen, KI-Produkte und Websites.</p></div><nav><a href="/admin">← Control Center</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a></nav></header><div class="grid"><section class="card"><div class="muted">REGISTRIERTE WEBPLATTFORMEN</div><div class="stat">{{sites|length}}</div></section><section class="card"><div class="muted">EIGENE PROJEKT-EINTRÄGE</div><div class="stat">{{projects|length}}</div></section><section class="card"><div class="muted">GLOBALE BENUTZER</div><div class="stat">{{users}}</div></section></div><section class="section"><h2>Unternehmen & Plattformen</h2><p class="muted">Die vorhandenen ULTIMA-Websites werden als Geschäftsbereiche dargestellt. Dies ist ein Service-/Projektportfolio, kein Nachweis einer rechtlich eingetragenen Gesellschaft oder ihrer Eigentumsverhältnisse.</p><div class="grid">{% for s in sites %}<article class="card"><span class="pill">{{'Aktiv' if s.is_active else 'Deaktiviert'}}</span><h3>{{s.name}}</h3><p class="muted">{{s.slug}} · Mitgliedschaft {{'aktiviert' if s.membership_enabled else 'deaktiviert'}}</p><p class="url"><a href="{{s.origin}}" target="_blank" rel="noopener">{{s.origin}}</a></p><a href="/admin/site/{{s.slug}}">Website verwalten →</a></article>{% else %}<p>Keine Websites in der Datenbank registriert.</p>{% endfor %}</div></section><section class="section"><h2>Ideen, Produkte & neue Unternehmensprojekte</h2><div class="grid">{% for p in projects %}<article class="card"><span class="pill">{{p.status}} · {{p.category}}</span><h3>{{p.name}}</h3><p>{{p.description}}</p><p class="url"><a href="{{p.url}}" target="_blank" rel="noopener">{{p.url}}</a></p><p class="muted">Eigentümer-Konto: {{p.owner.email}}</p></article>{% else %}<p class="muted">Noch keine zusätzlichen Nutzer-Projekte registriert.</p>{% endfor %}</div><p><a href="/admin/website-projects">Projektfreigaben und Veröffentlichungen verwalten →</a></p></section><section class="card wallet"><h2>Wallets & Treasury</h2><p>Die zentrale Wallet-Verwaltung bündelt bekannte Empfangsadressen und weitere öffentliche Unternehmens-Wallets.</p><a href="/admin/wallets">Wallet Hub öffnen →</a></section><section class="card"><h2>Operative Steuerung</h2><p>Mitglieder, Premium, Bestellungen, Rechnungen, Freigaben, Site-Health und Audit-Protokolle bleiben über das ULTIMA Control Center erreichbar.</p><a href="/admin">Zum Control Center →</a></section><p class="muted">Polsia-inspiriertes eigenes Business Studio. Keine Verbindung zu Polsia Inc. und kein vollständiger Klon eines fremden Dienstes.</p></main></html>"""
 
-ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><a href="/admin/company">Company Desk ↗</a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/business-studio">✦ ULTIMA Business Studio · Polsia-inspirierte Unternehmenszentrale →</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a> · <a href="/admin/website-projects">🌐 Öffentliche Website-Projekte verwalten →</a> · <a href="/portal">Globales Konto & Website-Studio öffnen →</a> · <a href="/admin/mentors">Mentorprofile freigeben →</a></p><p><a href="/admin/credits">Legacy-Credit-Review →</a> · <a href="/admin/premium">✦ Network Premium · Mitgliedschaften, Testphasen und Bitcoin-Rechnungen verwalten →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-inspiriert</h3><p>Unternehmensportfolio, Websites, KI-Projekte und operative Verwaltung an einem Ort.</p><a href="/admin/business-studio">Business Studio öffnen →</a></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
+ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><a href="/admin/company">Company Desk ↗</a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/business-studio">✦ ULTIMA Business Studio · Polsia-inspirierte Unternehmenszentrale →</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a> · <a href="/admin/website-projects">🌐 Öffentliche Website-Projekte verwalten →</a> · <a href="/portal">Globales Konto & Website-Studio öffnen →</a> · <a href="/admin/mentors">Mentorprofile freigeben →</a></p><p><a href="/admin/credits">Legacy-Credit-Review →</a> · <a href="/admin/premium">✦ Network Premium →</a> · <a href="/admin/memberships">Mitgliedschaftsanträge verwalten →</a> · <a href="/admin/holiday-access">Feiertags-Vollzugriff / Testtag →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-inspiriert</h3><p>Unternehmensportfolio, Websites, KI-Projekte und operative Verwaltung an einem Ort.</p><a href="/admin/business-studio">Business Studio öffnen →</a></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
 TOKEN_ONCE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Token einmalig anzeigen</title><body style="background:#080b14;color:#edf1ff;font:16px system-ui;max-width:760px;margin:8vh auto;padding:24px"><h1>Neuer Integrationstoken</h1><p>Website: {{site.name}}</p><p><b>Dieser Token wird nur jetzt angezeigt.</b> Kopiere ihn in die Secret-/Environment-Einstellungen der angebundenen Website. Er wird nicht erneut gespeichert oder angezeigt.</p><pre id="token" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#11182a;padding:18px;border-radius:12px">{{token}}</pre><button onclick="navigator.clipboard.writeText(document.getElementById('token').textContent)">Token kopieren</button> <a href="/admin/site/{{site.slug}}" style="color:#8ce4f0">Zurück zur Website</a></body></html>"""
 SITE_HTML = """<!doctype html>
 <html lang="de">
