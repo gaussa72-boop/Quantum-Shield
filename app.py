@@ -189,6 +189,14 @@ class MembershipApplication(db.Model):
     reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
+class AITrial(db.Model):
+    __tablename__ = "ai_trial"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    started_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    ends_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
 class HolidayAccess(db.Model):
     __tablename__ = "holiday_access"
     id = db.Column(db.Integer, primary_key=True)
@@ -390,6 +398,15 @@ def premium_status_payload(email, start_trial=False):
                 "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
                 "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":False,
                 "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK}
+    trial = AITrial.query.filter(func.lower(AITrial.email) == normalized).first()
+    if trial and trial.ends_at > now:
+        seconds=max(0,int((trial.ends_at-now).total_seconds()))
+        return {"status":"ai_trial","active":True,"can_use":True,"lifetime":False,
+                "trial_days_remaining":(seconds+86399)//86400,"trial_ends_at":trial.ends_at.isoformat(),
+                "trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,"trial_remaining":PREMIUM_TRIAL_USES,
+                "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),"period_days":PREMIUM_PERIOD_DAYS,
+                "checkout_ready":False,"wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
+                "message":"Dein einmaliger 24-Stunden-KI-Testzugang ist aktiv."}
     if holiday_test_day_active():
         return {"status":"holiday_test_day","active":True,"can_use":True,"lifetime":False,
                 "trial_days_remaining":1,"trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,
@@ -431,6 +448,9 @@ def premium_reserve_usage(email, site_slug, feature, request_id):
         return True, {"already_reserved":True,"trial":existing.trial_charge}
     if premium_owner_or_selected(normalized):
         return True, {"lifetime":True,"trial":False,"allowlisted":True}
+    one_day_trial = AITrial.query.filter(func.lower(AITrial.email) == normalized, AITrial.ends_at > datetime.now(timezone.utc)).first()
+    if one_day_trial:
+        return True, {"status":"ai_trial","trial":False,"ends_at":one_day_trial.ends_at.isoformat()}
     if holiday_test_day_active():
         return True, {"status":"holiday_test_day","trial":False}
     if not premium_public_enabled():
@@ -1789,6 +1809,25 @@ def global_mentor_message_send(request_id):
     db.session.add(msg)
     db.session.commit()
     return jsonify(ok=True, message={"id": msg.id, "sender_id": msg.sender_id, "body": msg.body, "created_at": msg.created_at.isoformat()}), 201
+
+@app.post("/api/global/ai-trial/start")
+@limiter.limit("2 per day")
+def global_ai_trial_start():
+    user=current_global_user()
+    if not user:
+        return jsonify(error="Ein genehmigtes ULTIMA-Mitgliedskonto ist erforderlich."),401
+    if user.role in {"owner","superadmin","admin","mentor"}:
+        return jsonify(ok=True,status="privileged",message="Deine Rolle benötigt keinen Testzugang."),200
+    existing=AITrial.query.filter(func.lower(AITrial.email)==user.email.lower()).first()
+    now=datetime.now(timezone.utc)
+    if existing:
+        if existing.ends_at>now:
+            return jsonify(ok=True,status="active",ends_at=existing.ends_at.isoformat())
+        return jsonify(error="Der einmalige 24-Stunden-KI-Test wurde bereits verwendet.",status="used"),409
+    item=AITrial(email=user.email.lower(),started_at=now,ends_at=now+timedelta(hours=24))
+    db.session.add(item);db.session.commit()
+    audit("global:"+user.email,"global.ai_trial.started",None,item.ends_at.isoformat())
+    return jsonify(ok=True,status="active",ends_at=item.ends_at.isoformat(),message="Dein einmaliger KI-Testzugang ist 24 Stunden aktiv."),201
 
 @app.get("/api/global/premium/status")
 def global_premium_status():
