@@ -85,6 +85,12 @@ class Admin(db.Model):
     role = db.Column(db.String(32), default="superadmin", nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
+class AdminRecoveryToken(db.Model):
+    __tablename__ = "admin_recovery_token"
+    id = db.Column(db.Integer, primary_key=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
 class Member(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     site_id = db.Column(db.Integer, db.ForeignKey("site.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -2114,6 +2120,60 @@ def admin_mentor_role(user_id, action):
     db.session.commit()
     return redirect(url_for("admin_mentors"))
 
+@app.route("/admin-recovery/<token>", methods=["GET", "POST"])
+@limiter.limit("5 per 15 minutes")
+def admin_recovery(token):
+    configured = os.getenv("ADMIN_RECOVERY_TOKEN", "").strip()
+    owner_email = ADMIN_OWNER_EMAIL
+    if not configured or not owner_email or not secrets.compare_digest(token, configured):
+        abort(410)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if AdminRecoveryToken.query.filter_by(token_hash=digest).first():
+        abort(410)
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+        if len(password) < 14 or len(password) > 128 or password != confirm:
+            return render_template_string(ADMIN_RECOVERY_HTML, owner_email=owner_email,
+                error="Passwörter müssen übereinstimmen und 14 bis 128 Zeichen lang sein."), 400
+        password_hash = generate_password_hash(password, method="scrypt")
+        admin = Admin.query.filter(func.lower(Admin.email) == owner_email).first()
+        if admin:
+            admin.password_hash = password_hash
+            admin.role = "superadmin"
+        else:
+            admin = Admin(email=owner_email, password_hash=password_hash, role="superadmin")
+            db.session.add(admin)
+        global_user = GlobalUser.query.filter(func.lower(GlobalUser.email) == owner_email).first()
+        if global_user:
+            global_user.password_hash = password_hash
+            global_user.role = "owner"
+            global_user.status = "active"
+            global_user.token_version += 1
+        else:
+            base = re.sub(r"[^A-Za-z0-9_.-]", "", owner_email.split("@", 1)[0])[:32] or "ultima-owner"
+            username = base if len(base) >= 3 else "ultima-owner"
+            suffix = 2
+            while GlobalUser.query.filter(func.lower(GlobalUser.username) == username.lower()).first():
+                tail = "-" + str(suffix)
+                username = base[:48-len(tail)] + tail
+                suffix += 1
+            db.session.add(GlobalUser(email=owner_email, username=username, password_hash=password_hash,
+                display_name="ULTIMA Superadmin", role="owner", status="active"))
+        db.session.add(AdminRecoveryToken(token_hash=digest))
+        db.session.commit()
+        session.clear()
+        session["admin_id"] = admin.id
+        session["admin_email"] = owner_email
+        session["csrf"] = secrets.token_urlsafe(32)
+        session["admin_auth_at"] = datetime.now(timezone.utc).timestamp()
+        session["admin_last_seen"] = session["admin_auth_at"]
+        session.permanent = True
+        audit("admin:" + owner_email, "admin.recovery.completed")
+        return redirect(url_for("admin_home"))
+    return render_template_string(ADMIN_RECOVERY_HTML, owner_email=owner_email, error=None)
+
+
 @app.get("/admin/login")
 def admin_login():
     return render_template_string(LOGIN_HTML)
@@ -2127,11 +2187,23 @@ def admin_login_post():
     if not ADMIN_OWNER_EMAIL or email != ADMIN_OWNER_EMAIL:
         return render_template_string(LOGIN_HTML, error="Dieses Konto ist nicht als alleiniger ULTIMA-Inhaber freigegeben."), 401
 
-    # Central ULTIMA login is independent of every excluded property.
     admin = Admin.query.filter(func.lower(Admin.email) == email).first()
-
-    if not admin or not check_password_hash(admin.password_hash, password):
-        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein eingerichtetes ULTIMA-Admin-Konto."), 401
+    valid = bool(admin and check_password_hash(admin.password_hash, password))
+    # Sync a verified owner password from the central ULTIMA profile when present.
+    if not valid:
+        owner = GlobalUser.query.filter(func.lower(GlobalUser.email) == email).first()
+        if owner and owner.status == "active" and check_password_hash(owner.password_hash, password):
+            if not admin:
+                admin = Admin(email=email, password_hash=owner.password_hash, role="superadmin")
+                db.session.add(admin)
+            else:
+                admin.password_hash = owner.password_hash
+                admin.role = "superadmin"
+            owner.role = "owner"
+            db.session.commit()
+            valid = True
+    if not valid:
+        return render_template_string(LOGIN_HTML, error="Anmeldedaten ungültig. Nutze dein ULTIMA-Inhaberkonto oder richte den Zugang über den einmaligen Wiederherstellungslink ein."), 401
 
     session.clear()
     session["admin_id"] = admin.id
@@ -2807,6 +2879,8 @@ def admin_overview():
 FINANCE_ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Finanzübersicht</title><style>body{background:#080b14;color:#edf1ff;font:15px system-ui;max-width:1000px;margin:30px auto;padding:18px}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.n{font-size:27px;font-weight:800}a{color:#8ce4f0}.muted{color:#a8b4cd;font-size:12px}</style><h1>✦ ULTIMA · Finanzverwaltung</h1><p><a href="/admin">← Control Center</a> · <span class="muted">Superadmin: {{owner_email}}</span></p><div class="grid"><section class="card"><small>Benutzer mit Rechnungen</small><div class="n">{{users}}</div></section><section class="card"><small>Offene Rechnungen</small><div class="n">{{open_count}}</div></section><section class="card"><small>Als bezahlt markiert</small><div class="n">{{paid_count}}</div></section><section class="card"><small>Provider-Kontoverbindungen</small><div class="n">{{providers}}</div></section></div><section class="card"><h2>Datenschutz</h2><p>Diese Verwaltungsübersicht zeigt nur aggregierte Zahlen. Einzelne E-Mail-Inhalte, Rechnungen und Anhänge bleiben im jeweiligen Benutzerkonto privat.</p><p>OAuth-Verbindungen sind noch nicht aktiv: Anbieter-Client-IDs, sichere Callback-Routen und verschlüsselte Token-Verwahrung müssen vor dem Mailimport eingerichtet und getestet werden.</p></section></html>"""
 
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
+ADMIN_RECOVERY_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Superadmin-Zugang wiederherstellen</title><body><main class="panel" style="max-width:560px;margin:8vh auto;padding:28px"><div class="brand">ULTIMA NETWORK · SECURE ACCESS</div><h1>Superadmin-Zugang einrichten</h1><p>Einmaliger, geschützter Wiederherstellungslink für {{owner_email}}. Lege hier dein neues Passwort fest.</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><label>Neues Passwort (mindestens 14 Zeichen)</label><input type="password" name="password" minlength="14" maxlength="128" autocomplete="new-password" required><label>Passwort wiederholen</label><input type="password" name="confirm" minlength="14" maxlength="128" autocomplete="new-password" required><button type="submit">Superadmin-Zugang aktivieren</button></form></main></body></html>"""
+
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
 WALLETS_ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Wallet-Verwaltung</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}main{max-width:1100px;margin:30px auto;padding:0 18px}header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}a{color:#8ce4f0}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}input,select,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px;max-width:100%}button{cursor:pointer;background:#293b68}.addr{overflow-wrap:anywhere;font:12px ui-monospace,monospace;color:#8ce4f0}.muted{color:#a8b4cd;font-size:12px}.warn{border-color:#78602e;color:#f0d69d}form{margin:0}</style><main><header><div><h1>₿ ULTIMA Wallet-Verwaltung</h1><p class="muted">Zentrale Übersicht öffentlicher Wallet-Adressen · Inhaber: {{owner_email}}</p></div><nav><a href="/admin">← Control Center</a> · <a href="/admin/finance">Finanzverwaltung →</a> · <a href="/admin/business-studio">Business Studio →</a></nav></header><section class="card warn"><b>Schlüsselsicherheit:</b> Hier werden ausschließlich öffentliche Empfangs-/Portfolio-Adressen verwaltet. Keine Seed-Phrasen, Private Keys oder Signaturdaten eintragen. Es gibt keine Verwahrung und keine automatische Transaktionsfreigabe. Die zentrale Bitcoin-Adresse ist {{'als Render-Variable konfiguriert' if btc_configured else 'aus dem bekannten Projektkontext vorbefüllt; Render-Variable BTC_RECEIVE_ADDRESS ist noch zu konfigurieren'}}.</section><h2>Registrierte Wallets ({{wallets|length}})</h2><div class="grid">{% for w in wallets %}<article class="card"><b>{{w.label}}</b><p class="muted">{{w.network}} · {{w.purpose}}</p><p class="addr">{{w.address}}</p><p class="muted">{{w.owner_scope}} · hinzugefügt {{w.created_at}}</p>{% if not (w.network == 'Bitcoin' and w.address == 'bc1q4q7lujkr8mcv9e7suet524uxjfwlaxm7aelq5y') %}<form method="post" action="/admin/wallets/{{w.id}}/delete"><input type="hidden" name="csrf" value="{{csrf}}"><button>Eintrag entfernen</button></form>{% endif %}</article>{% else %}<p>Noch keine Wallet eingetragen.</p>{% endfor %}</div><section class="card"><h2>Weitere eigene Wallet hinzufügen</h2><p class="muted">Trage hier nur öffentliche Adressen ein. Nutzer- oder Unternehmens-Wallets werden nicht automatisch aus Apps ausgelesen.</p><form method="post" action="/admin/wallets"><input type="hidden" name="csrf" value="{{csrf}}"><p><input name="label" placeholder="Bezeichnung, z. B. Krypto-Aurora Treasury" required></p><p><select name="network" required><option value="">Netzwerk wählen</option><option>Bitcoin</option><option>Solana</option><option>Ethereum</option><option>Polygon</option><option>Base</option><option>BNB Chain</option><option>Other EVM</option></select><input name="address" placeholder="Öffentliche Wallet-Adresse" required style="width:min(600px,90%)"></p><p><input name="purpose" placeholder="Zweck (optional)" style="width:min(600px,90%)"></p><button>Wallet registrieren</button></form></section><p class="muted">Wallets werden in der ULTIMA-Datenbank gespeichert. Kontostände, Token-Metadaten und Transaktionen benötigen je Netzwerk einen separaten, geprüften Read-only-Provider.</p></main></html>"""
 
@@ -3108,3 +3182,21 @@ def cyber_shield_scan():
 # Register the ULTIMA company administration sub-app.
 from company_desk import bp as ultima_company_bp
 app.register_blueprint(ultima_company_bp)
+
+
+@app.after_request
+def inject_ultima_gear_theme(response):
+    if response.mimetype == "text/html" and not response.direct_passthrough:
+        try:
+            html = response.get_data(as_text=True)
+            if "ultima-gear-theme" not in html:
+                if "</head>" in html:
+                    html = html.replace("</head>", "<style id=\"ultima-gear-theme\">\n:root{color-scheme:dark;--ug-gold:#e4bd78;--ug-cyan:#55dce5;--ug-muted:#a8b5c8}\nhtml{background:#05070c!important}\nbody{position:relative;isolation:isolate;min-height:100vh;background:radial-gradient(ellipse at 50% -18%,#392a20 0,transparent 48%),linear-gradient(145deg,#030509,#10131c 58%,#08090e)!important;color:#f5ead7!important}\nbody:before,body:after{content:\"⚙\";position:fixed;z-index:-1;pointer-events:none;user-select:none;color:#a9a9a9;opacity:.105;font-size:min(86vw,590px);line-height:1;filter:drop-shadow(0 0 34px #55dce51c);animation:ultimaGearTurn 100s linear infinite}\nbody:before{left:-.28em;top:12vh}body:after{right:-.28em;bottom:-.35em;font-size:min(72vw,480px);animation-direction:reverse;opacity:.09}\n@keyframes ultimaGearTurn{to{transform:rotate(360deg)}}\nmain,.wrap,.card,.panel,.tile,section{position:relative}\n.panel,.card,.tile{background:linear-gradient(145deg,rgba(37,28,25,.94),rgba(13,18,29,.96) 70%)!important;border:1px solid #8b673f!important;border-radius:20px!important;box-shadow:0 18px 58px #0009,inset 0 1px #fff1!important}\nh1,h2,h3{color:#f4e7d2!important;text-shadow:0 2px 20px #d7ad6c1c}\np,.muted,small{color:var(--ug-muted)}\na{color:var(--ug-cyan)!important}\ninput:not([type=checkbox]):not([type=radio]),textarea,select{width:100%;max-width:100%;box-sizing:border-box;background:#071321!important;color:#f8f8f8!important;border:1px solid #29405e!important;border-radius:12px!important;padding:13px 15px!important}\ninput:focus,textarea:focus,select:focus{outline:2px solid #55dce566!important;border-color:var(--ug-cyan)!important}\nbutton,.btn,input[type=submit]{background:linear-gradient(105deg,#9d7044,#edd19a)!important;color:#17110b!important;border:1px solid #c79a5d!important;border-radius:9px!important;padding:12px 19px!important;font-weight:750!important;box-shadow:0 8px 22px #0005!important;cursor:pointer}\nbutton:hover,.btn:hover,input[type=submit]:hover{filter:brightness(1.08)}\n.brand,.eyebrow{color:var(--ug-gold)!important;letter-spacing:.2em}\n@media(max-width:650px){main,.wrap{padding-left:16px!important;padding-right:16px!important}.panel,.card,.tile{padding:20px!important}body:before{font-size:88vw;left:-.35em}body:after{font-size:70vw}}\n@media(prefers-reduced-motion:reduce){body:before,body:after{animation:none}}\n</style>" + "</head>", 1)
+                elif "</body>" in html:
+                    html = html.replace("</body>", "<style id=\"ultima-gear-theme\">\n:root{color-scheme:dark;--ug-gold:#e4bd78;--ug-cyan:#55dce5;--ug-muted:#a8b5c8}\nhtml{background:#05070c!important}\nbody{position:relative;isolation:isolate;min-height:100vh;background:radial-gradient(ellipse at 50% -18%,#392a20 0,transparent 48%),linear-gradient(145deg,#030509,#10131c 58%,#08090e)!important;color:#f5ead7!important}\nbody:before,body:after{content:\"⚙\";position:fixed;z-index:-1;pointer-events:none;user-select:none;color:#a9a9a9;opacity:.105;font-size:min(86vw,590px);line-height:1;filter:drop-shadow(0 0 34px #55dce51c);animation:ultimaGearTurn 100s linear infinite}\nbody:before{left:-.28em;top:12vh}body:after{right:-.28em;bottom:-.35em;font-size:min(72vw,480px);animation-direction:reverse;opacity:.09}\n@keyframes ultimaGearTurn{to{transform:rotate(360deg)}}\nmain,.wrap,.card,.panel,.tile,section{position:relative}\n.panel,.card,.tile{background:linear-gradient(145deg,rgba(37,28,25,.94),rgba(13,18,29,.96) 70%)!important;border:1px solid #8b673f!important;border-radius:20px!important;box-shadow:0 18px 58px #0009,inset 0 1px #fff1!important}\nh1,h2,h3{color:#f4e7d2!important;text-shadow:0 2px 20px #d7ad6c1c}\np,.muted,small{color:var(--ug-muted)}\na{color:var(--ug-cyan)!important}\ninput:not([type=checkbox]):not([type=radio]),textarea,select{width:100%;max-width:100%;box-sizing:border-box;background:#071321!important;color:#f8f8f8!important;border:1px solid #29405e!important;border-radius:12px!important;padding:13px 15px!important}\ninput:focus,textarea:focus,select:focus{outline:2px solid #55dce566!important;border-color:var(--ug-cyan)!important}\nbutton,.btn,input[type=submit]{background:linear-gradient(105deg,#9d7044,#edd19a)!important;color:#17110b!important;border:1px solid #c79a5d!important;border-radius:9px!important;padding:12px 19px!important;font-weight:750!important;box-shadow:0 8px 22px #0005!important;cursor:pointer}\nbutton:hover,.btn:hover,input[type=submit]:hover{filter:brightness(1.08)}\n.brand,.eyebrow{color:var(--ug-gold)!important;letter-spacing:.2em}\n@media(max-width:650px){main,.wrap{padding-left:16px!important;padding-right:16px!important}.panel,.card,.tile{padding:20px!important}body:before{font-size:88vw;left:-.35em}body:after{font-size:70vw}}\n@media(prefers-reduced-motion:reduce){body:before,body:after{animation:none}}\n</style>" + "</body>", 1)
+                response.set_data(html)
+        except (UnicodeDecodeError, RuntimeError):
+            pass
+    return response
+
+
