@@ -318,6 +318,19 @@ def current_global_user():
 def premium_checkout_ready():
     return bool(BTC_ADDRESS and PREMIUM_SELLER_READY and os.getenv("ULTIMA_PREMIUM_CRYPTO_ENABLED", "true").lower() == "true")
 
+def premium_public_enabled():
+    return os.getenv("ULTIMA_PREMIUM_PUBLIC_ENABLED", "true").strip().lower() == "true"
+
+def premium_allowlist():
+    return {x.strip().lower() for x in os.getenv("ULTIMA_PREMIUM_ALLOWLIST", "").split(",") if x.strip()}
+
+def premium_owner_or_selected(email):
+    normalized = str(email or "").strip().lower()
+    return bool(normalized and (
+        (ADMIN_OWNER_EMAIL and normalized == ADMIN_OWNER_EMAIL) or
+        normalized in premium_allowlist()
+    ))
+
 def premium_account_for(email, start_trial=False):
     normalized = str(email or "").strip().lower()
     account = NetworkPremiumAccount.query.filter(func.lower(NetworkPremiumAccount.email) == normalized).with_for_update().first()
@@ -342,6 +355,20 @@ def premium_status_payload(email, start_trial=False):
                 "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
                 "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":premium_checkout_ready(),
                 "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK}
+    if premium_owner_or_selected(normalized):
+        return {"status":"lifetime" if (ADMIN_OWNER_EMAIL and normalized == ADMIN_OWNER_EMAIL) else "allowlisted",
+                "active":True,"can_use":True,"lifetime":True,"trial_days_remaining":0,
+                "trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,"trial_remaining":0,
+                "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
+                "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":False,
+                "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK}
+    if not premium_public_enabled():
+        return {"status":"restricted","active":False,"can_use":False,"lifetime":False,
+                "trial_days_remaining":0,"trial_limit":0,"trial_used":0,"trial_remaining":0,
+                "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),
+                "period_days":PREMIUM_PERIOD_DAYS,"checkout_ready":False,
+                "wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
+                "message":"Premium-Zugänge sind bis zur öffentlichen Freigabe durch die Administration gesperrt."}
     account = premium_account_for(normalized, start_trial=start_trial)
     paid = bool(account.paid_until and account.paid_until > now)
     started = bool(account.trial_started_at)
@@ -367,8 +394,10 @@ def premium_reserve_usage(email, site_slug, feature, request_id):
         if existing.email.lower() != normalized or existing.state == "refunded":
             return False, {"status":"request_conflict","error":"Diese request_id wurde bereits verwendet."}
         return True, {"already_reserved":True,"trial":existing.trial_charge}
-    if ADMIN_OWNER_EMAIL and normalized == ADMIN_OWNER_EMAIL:
-        return True, {"lifetime":True,"trial":False}
+    if premium_owner_or_selected(normalized):
+        return True, {"lifetime":True,"trial":False,"allowlisted":True}
+    if not premium_public_enabled():
+        return False, {"status":"restricted","error":"Premium ist derzeit nur für den Superadmin und ausdrücklich freigeschaltete Mitglieder verfügbar."}
     account = premium_account_for(normalized, start_trial=True)
     now = datetime.now(timezone.utc)
     paid = bool(account.paid_until and account.paid_until > now)
@@ -824,6 +853,8 @@ def site_premium_invoice_create(slug):
     site, member = current_member(slug)
     if not site or not member:
         return jsonify(error="Anmeldung erforderlich."), 401
+    if not premium_public_enabled() and not premium_owner_or_selected(member.email):
+        return jsonify(error="Premium-Rechnungen sind bis zur öffentlichen Freigabe gesperrt."), 403
     try:
         invoice = create_network_premium_invoice(member.email, site.slug)
     except Exception as exc:
