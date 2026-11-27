@@ -2150,6 +2150,21 @@ def admin_membership_decision(application_id,action):
 @app.get("/admin/holiday-access")
 @admin_required
 def admin_holiday_access():
+    # Seed upcoming statutory public holidays for Baden-Württemberg; all remain OFF until the owner activates them.
+    defaults = [
+        ("2026-12-25","1. Weihnachtstag"),("2026-12-26","2. Weihnachtstag"),
+        ("2027-01-01","Neujahr"),("2027-01-06","Heilige Drei Könige"),
+        ("2027-03-26","Karfreitag"),("2027-03-29","Ostermontag"),
+        ("2027-05-01","Tag der Arbeit"),("2027-05-06","Christi Himmelfahrt"),
+        ("2027-05-17","Pfingstmontag"),("2027-05-27","Fronleichnam"),
+        ("2027-10-03","Tag der Deutschen Einheit"),("2027-11-01","Allerheiligen"),
+        ("2027-12-25","1. Weihnachtstag"),("2027-12-26","2. Weihnachtstag")
+    ]
+    for iso,label in defaults:
+        d=date.fromisoformat(iso)
+        if not HolidayAccess.query.filter_by(holiday_date=d).first():
+            db.session.add(HolidayAccess(holiday_date=d,label=label,enabled=False))
+    db.session.commit()
     items=HolidayAccess.query.order_by(HolidayAccess.holiday_date.desc()).limit(100).all()
     today=datetime.now(ZoneInfo("Europe/Berlin")).date()
     active=holiday_test_day_active()
