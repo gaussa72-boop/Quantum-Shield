@@ -2570,7 +2570,7 @@ def admin_finance():
     users = db.session.query(FinanceInvoice.owner_id).distinct().count()
     open_count = FinanceInvoice.query.filter_by(status="open").count()
     paid_count = FinanceInvoice.query.filter_by(status="paid").count()
-    open_sum = db.session.query(func.coalesce(func.sum(FinanceInvoice.amount),0)).filter_by(status="open").scalar()
+    open_sum = db.session.query(func.coalesce(func.sum(FinanceInvoice.amount),0)).filter(FinanceInvoice.status == "open").scalar()
     providers = EmailProviderAccount.query.count()
     return render_template_string(FINANCE_ADMIN_HTML, users=users, open_count=open_count, paid_count=paid_count,
         open_sum=open_sum, providers=providers, owner_email=ADMIN_OWNER_EMAIL)
