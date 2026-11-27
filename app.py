@@ -828,7 +828,7 @@ def register(slug):
     now = datetime.now(timezone.utc)
     if not invite or invite.used_at or invite.revoked_at or invite.expires_at <= now:
         return jsonify(error="Registrierungscode ungültig, abgelaufen oder bereits verwendet."), 403
-    if not name or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email)>255:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 255:
         return jsonify(error="Bitte gib eine gültige E-Mail-Adresse ein."), 400
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
         return jsonify(error="Benutzername: 3–32 Zeichen, Buchstaben, Zahlen, Punkt, _ oder -."), 400
@@ -1340,7 +1340,7 @@ def setup_admin():
     if not ADMIN_OWNER_EMAIL or email != ADMIN_OWNER_EMAIL:
         return jsonify(error="Die Ersteinrichtung ist ausschließlich für die freigegebene Inhaber-E-Mail erlaubt."), 403
     password = str(data.get("password", ""))
-    if not name or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email)>255:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(password) < 14 or len(password) > 128:
         return jsonify(error="Gültige E-Mail und Passwort mit mindestens 14 Zeichen erforderlich."), 400
     admin = Admin(email=email, password_hash=generate_password_hash(password, method="scrypt"))
     db.session.add(admin)
@@ -1491,7 +1491,7 @@ def global_register():
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
     display_name = str(data.get("display_name", username)).strip()[:120]
-    if not name or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email)>255:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 255:
         return jsonify(error="Bitte eine gültige E-Mail-Adresse eingeben."), 400
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
         return jsonify(error="Benutzername: 3–32 Zeichen, Buchstaben, Zahlen, Punkt, _ oder -."), 400
