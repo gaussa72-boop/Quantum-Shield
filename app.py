@@ -407,6 +407,12 @@ def premium_status_payload(email, start_trial=False):
                 "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),"period_days":PREMIUM_PERIOD_DAYS,
                 "checkout_ready":False,"wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
                 "message":"Dein einmaliger 24-Stunden-KI-Testzugang ist aktiv."}
+    if trial:
+        return {"status":"ai_trial_used","active":False,"can_use":False,"lifetime":False,
+                "trial_days_remaining":0,"trial_limit":0,"trial_used":0,"trial_remaining":0,
+                "paid_until":None,"price_eur":str(UNIFIED_PREMIUM_PRICE_EUR),"period_days":PREMIUM_PERIOD_DAYS,
+                "checkout_ready":False,"wallet_configured":bool(BTC_ADDRESS),"network":BTC_NETWORK,
+                "message":"Dein einmaliger 24-Stunden-KI-Testzugang wurde bereits verwendet."}
     if holiday_test_day_active():
         return {"status":"holiday_test_day","active":True,"can_use":True,"lifetime":False,
                 "trial_days_remaining":1,"trial_limit":PREMIUM_TRIAL_USES,"trial_used":0,
@@ -801,7 +807,7 @@ def public_site_config(slug):
     site = site_for(slug)
     if not site:
         return jsonify(error="Webseite nicht gefunden oder nicht freigeschaltet."), 404
-    return jsonify(site={"slug": site.slug, "name": site.name, "registration_enabled": True, "registration_code_required": True})
+    return jsonify(site={"slug": site.slug, "name": site.name, "registration_enabled": True, "membership_application_required": True, "membership_application_url": os.getenv("ULTIMA_PUBLIC_URL", request.url_root.rstrip("/")).rstrip("/") + "/membership-apply", "registration_code_required": False})
 
 @app.post("/api/<slug>/register")
 @limiter.limit("5 per hour")
@@ -1403,7 +1409,7 @@ async function refreshPremium(){
   const d=await api("/api/global/premium/status"),p=d.premium||{};
   let heading=p.status==="lifetime"?"Master Premium · lebenslang aktiv":p.status==="paid"?"Premium aktiv":p.status==="ai_trial"?"24-Stunden-KI-Test aktiv":p.status==="holiday_test_day"?"Feiertags-Vollzugriff aktiv":p.status==="trial"?"Kostenlose Testphase aktiv":p.status==="not_started"?"Testphase noch nicht gestartet":p.status==="restricted"?"Zugang derzeit eingeschränkt":"Testphase beendet";
   statusRoot.innerHTML="<b>"+safeText(heading)+"</b><br>"+(p.status==="trial"?"Verbrauch: "+safeText(p.trial_used)+" / "+safeText(p.trial_limit)+" · verbleibend: "+safeText(p.trial_remaining)+" Aktionen · noch "+safeText(p.trial_days_remaining)+" Tage":p.status==="paid"?"Freigeschaltet bis: "+safeText(p.paid_until||""):"Tarif: "+safeText(p.price_eur||"9.99")+" € / "+safeText(p.period_days||30)+" Tage");
-  if(!["lifetime","paid","ai_trial","holiday_test_day"].includes(p.status)){
+  if(!["lifetime","paid","ai_trial","ai_trial_used","holiday_test_day"].includes(p.status)){
    const day=document.createElement("button");day.textContent="Einmaligen 24-Stunden-KI-Test starten";day.onclick=async()=>{day.disabled=true;try{const result=await api("/api/global/ai-trial/start","POST",{});note(result.message||"24-Stunden-Testzugang aktiviert.");await refreshPremium()}catch(e){alert(e.message);day.disabled=false}};actions.append(day);
   }
   if(p.status==="not_started"){
