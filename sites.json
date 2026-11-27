@@ -25,7 +25,7 @@
     "name": "DropShift Store",
     "origin": "https://dropshift-store.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "quantum-ai",
@@ -137,7 +137,7 @@
     "name": "BullRun Apparel",
     "origin": "https://bullrun-apparel.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "quantum-mirror-wonderland",
@@ -200,42 +200,42 @@
     "name": "Aktiv Lyca",
     "origin": "https://aktiv-lyca-rgds.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "sneaker-store",
     "name": "Sneaker Store",
     "origin": "https://sneaker-store-bow5.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "webshop-parfum",
     "name": "Webshop Parfum",
     "origin": "https://webshop-parfum-90dl.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "aktiv-lyca-rnmc",
     "name": "Aktiv Lyca",
     "origin": "https://aktiv-lyca-rnmc.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "royal-palace-4r57",
     "name": "Rothshild · Royal Palace",
     "origin": "https://royal-palace-4r57.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "business-real-estate-membership",
     "name": "Rothshild · Business Real Estate",
     "origin": "https://business-real-estate-membership-wswk.onrender.com",
     "is_active": false,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "lichtkrieger",
@@ -249,14 +249,14 @@
     "name": "ULTIMA Central Public Portal",
     "origin": "https://ultima-central-45ne.onrender.com",
     "is_active": true,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "ultima-unify-portal",
     "name": "ULTIMA Unify Account Hub",
     "origin": "https://ultima-unify-45ne.onrender.com",
     "is_active": true,
-    "membership_enabled": false
+    "membership_enabled": true
   },
   {
     "slug": "neuroforge",
