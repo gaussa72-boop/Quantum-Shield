@@ -814,20 +814,23 @@ def register(slug):
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
     raw_code = str(data.get("registration_code", "")).strip()
-    if not raw_code or len(raw_code) > 100:
-        return jsonify(error="Ein gültiger, einmaliger Registrierungscode ist erforderlich."), 400
     approved_application = MembershipApplication.query.filter(
         func.lower(MembershipApplication.email) == email,
         MembershipApplication.status == "approved",
         MembershipApplication.site_slug.in_(["global", slug])
     ).order_by(MembershipApplication.reviewed_at.desc()).first()
-    if not (ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL) and not approved_application:
+    is_owner = bool(ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL)
+    if not is_owner and not approved_application:
         return jsonify(error="Vor der Registrierung ist ein genehmigter Mitgliedschaftsantrag erforderlich."), 403
-    code_hash = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
-    invite = RegistrationCode.query.filter_by(site_id=site.id, code_hash=code_hash).with_for_update().first()
+    invite = None
     now = datetime.now(timezone.utc)
-    if not invite or invite.used_at or invite.revoked_at or invite.expires_at <= now:
-        return jsonify(error="Registrierungscode ungültig, abgelaufen oder bereits verwendet."), 403
+    if raw_code:
+        if len(raw_code) > 100:
+            return jsonify(error="Registrierungscode ungültig."), 400
+        code_hash = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+        invite = RegistrationCode.query.filter_by(site_id=site.id, code_hash=code_hash).with_for_update().first()
+        if not invite or invite.used_at or invite.revoked_at or invite.expires_at <= now:
+            return jsonify(error="Registrierungscode ungültig, abgelaufen oder bereits verwendet."), 403
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 255:
         return jsonify(error="Bitte gib eine gültige E-Mail-Adresse ein."), 400
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
@@ -838,10 +841,12 @@ def register(slug):
         return jsonify(error="Für diese Webseite existiert bereits ein Konto mit dieser E-Mail."), 409
     if Member.query.filter_by(site_id=site.id, username=username).first():
         return jsonify(error="Dieser Benutzername ist bereits vergeben."), 409
-    is_owner = bool(ADMIN_OWNER_EMAIL and email == ADMIN_OWNER_EMAIL)
-    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if is_owner else "member", status="active" if is_owner else "pending", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
+    member = Member(site_id=site.id, email=email, username=username, password_hash=generate_password_hash(password, method="scrypt"), display_name=str(data.get("display_name", username))[:120], role="superadmin" if is_owner else "member", status="active" if (is_owner or approved_application) else "pending", is_lifetime_premium=bool(PREMIUM_OWNER_EMAIL and email == PREMIUM_OWNER_EMAIL))
     db.session.add(member)
-    invite.used_at = now
+    if invite:
+        invite.used_at = now
+    if approved_application:
+        approved_application.status = "registered"
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
     return jsonify(ok=True, approval_required=not is_owner, status=member.status, message="Registrierung eingegangen. Dein Konto wird nach Freigabe durch die Webseiten-Administration aktiviert." if not is_owner else "Inhaber-Konto angelegt.", token=issue_token(member) if is_owner else None, member={"id": member.id, "email": member.email, "username": member.username, "display_name": member.display_name, "role": member.role, "status": member.status, "is_lifetime_premium": member.is_lifetime_premium}), 201
