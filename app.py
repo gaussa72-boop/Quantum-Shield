@@ -189,6 +189,59 @@ class MembershipApplication(db.Model):
     reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
+class EmailProviderAccount(db.Model):
+    __tablename__ = "email_provider_account"
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = db.Column(db.String(24), nullable=False)
+    mailbox_email = db.Column(db.String(255), default="", nullable=False)
+    status = db.Column(db.String(32), default="consent_requested", nullable=False, index=True)
+    scopes_json = db.Column(db.JSON, default=list, nullable=False)
+    consent_requested_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    connected_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # OAuth secrets are intentionally not stored until provider-specific encryption and callback configuration exists.
+    __table_args__ = (UniqueConstraint("owner_id", "provider", "mailbox_email", name="uq_email_provider_mailbox"),)
+
+class FinanceInvoice(db.Model):
+    __tablename__ = "finance_invoice"
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = db.Column(db.String(24), default="manual", nullable=False)
+    source_message_id = db.Column(db.String(255), nullable=True)
+    vendor = db.Column(db.String(255), nullable=False)
+    invoice_number = db.Column(db.String(128), default="", nullable=False)
+    description = db.Column(db.String(1000), default="", nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    currency = db.Column(db.String(8), default="EUR", nullable=False)
+    invoice_date = db.Column(db.Date, nullable=True)
+    due_date = db.Column(db.Date, nullable=True, index=True)
+    status = db.Column(db.String(16), default="open", nullable=False, index=True)
+    attachment_name = db.Column(db.String(255), default="", nullable=False)
+    source_url = db.Column(db.String(1000), default="", nullable=False)
+    imported_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    __table_args__ = (UniqueConstraint("owner_id", "provider", "source_message_id", name="uq_invoice_source_message"),)
+
+class FinanceInvoiceCost(db.Model):
+    __tablename__ = "finance_invoice_cost"
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey("finance_invoice.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_type = db.Column(db.String(32), default="other", nullable=False)
+    description = db.Column(db.String(500), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class FinancePlan(db.Model):
+    __tablename__ = "finance_plan"
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("global_user.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    monthly_budget = db.Column(db.Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    monthly_payment_capacity = db.Column(db.Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    notes = db.Column(db.String(2000), default="", nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
 class AITrial(db.Model):
     __tablename__ = "ai_trial"
     id = db.Column(db.Integer, primary_key=True)
@@ -2356,6 +2409,153 @@ def premium_success():
 def premium_cancel():
     return "<!doctype html><meta charset='utf-8'><body style='font:16px system-ui;background:#080b14;color:white;padding:30px'><h1>Checkout abgebrochen</h1><p>Es wurde keine Zahlung bestätigt.</p></body>"
 
+def _finance_invoice_payload(invoice):
+    costs = FinanceInvoiceCost.query.filter_by(invoice_id=invoice.id, owner_id=invoice.owner_id).all()
+    extra = sum((Decimal(str(x.amount)) for x in costs), Decimal("0.00"))
+    return {"id": invoice.id, "provider": invoice.provider, "vendor": invoice.vendor,
+        "invoice_number": invoice.invoice_number, "description": invoice.description,
+        "amount": str(invoice.amount), "extra_costs": str(extra), "total": str(Decimal(str(invoice.amount)) + extra),
+        "currency": invoice.currency, "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+        "due_date": invoice.due_date.isoformat() if invoice.due_date else None, "status": invoice.status,
+        "attachment_name": invoice.attachment_name, "source_url": invoice.source_url,
+        "paid_at": invoice.paid_at.isoformat() if invoice.paid_at else None,
+        "costs": [{"id": x.id, "type": x.cost_type, "description": x.description, "amount": str(x.amount)} for x in costs]}
+
+@app.get("/api/global/finance/providers")
+def global_finance_providers():
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    providers = []
+    for key, label, env in [("gmail","Gmail","GOOGLE_OAUTH_CLIENT_ID"),("outlook","Outlook","MICROSOFT_OAUTH_CLIENT_ID"),("icloud","iCloud Mail","ICLOUD_MAIL_OAUTH_CLIENT_ID"),("hostinger","Hostinger Mail","HOSTINGER_MAIL_OAUTH_CLIENT_ID")]:
+        account = EmailProviderAccount.query.filter_by(owner_id=user.id, provider=key).order_by(EmailProviderAccount.id.desc()).first()
+        providers.append({"provider":key,"label":label,"status":account.status if account else "not_connected",
+            "connect_ready":bool(os.getenv(env,"").strip()),"mailbox_email":account.mailbox_email if account else ""})
+    return jsonify(providers=providers, consent_required=True,
+        privacy="Jede Verbindung wird einzeln vom Kontoinhaber freigegeben. E-Mail-Inhalte und Rechnungen bleiben dem jeweiligen Benutzerkonto zugeordnet.")
+
+@app.post("/api/global/finance/providers/<provider>/request")
+def global_finance_provider_request(provider):
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    if provider not in {"gmail","outlook","icloud","hostinger"}: return jsonify(error="Anbieter nicht unterstützt."), 400
+    env = {"gmail":"GOOGLE_OAUTH_CLIENT_ID","outlook":"MICROSOFT_OAUTH_CLIENT_ID","icloud":"ICLOUD_MAIL_OAUTH_CLIENT_ID","hostinger":"HOSTINGER_MAIL_OAUTH_CLIENT_ID"}[provider]
+    account = EmailProviderAccount.query.filter_by(owner_id=user.id, provider=provider).first()
+    if not account:
+        account = EmailProviderAccount(owner_id=user.id, provider=provider, status="consent_requested")
+        db.session.add(account)
+    account.status = "consent_requested"
+    account.consent_requested_at = datetime.now(timezone.utc)
+    db.session.commit()
+    if not os.getenv(env,"").strip():
+        return jsonify(ok=True, status="oauth_configuration_required",
+            message="Zugriffsanfrage vorgemerkt. Der OAuth-Client dieses Anbieters muss noch sicher in Render konfiguriert werden. Es werden keine Passwörter abgefragt oder gespeichert."), 202
+    return jsonify(ok=True, status="oauth_callback_not_yet_enabled",
+        message="OAuth-Client vorhanden. Der sichere Anbieter-Callback und verschlüsselte Token-Speicher müssen vor dem tatsächlichen Mailzugriff noch aktiviert werden."), 202
+
+@app.get("/api/global/finance/invoices")
+def global_finance_invoices():
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    rows = FinanceInvoice.query.filter_by(owner_id=user.id).order_by(FinanceInvoice.due_date.asc().nullslast(), FinanceInvoice.imported_at.desc()).all()
+    payload = [_finance_invoice_payload(x) for x in rows]
+    open_total = sum((Decimal(x["total"]) for x in payload if x["status"] == "open"), Decimal("0.00"))
+    paid_total = sum((Decimal(x["total"]) for x in payload if x["status"] == "paid"), Decimal("0.00"))
+    return jsonify(invoices=payload, open_total=str(open_total), paid_total=str(paid_total), currency="EUR")
+
+@app.post("/api/global/finance/invoices")
+def global_finance_invoice_create():
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    vendor = str(data.get("vendor","")).strip()[:255]
+    try: amount = Decimal(str(data.get("amount",""))).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError): return jsonify(error="Ungültiger Rechnungsbetrag."), 400
+    if not vendor or amount <= 0 or amount > Decimal("100000000"):
+        return jsonify(error="Lieferant und positiver Betrag sind erforderlich."), 400
+    def parse_day(value):
+        return date.fromisoformat(str(value)) if value else None
+    try:
+        invoice_date, due_date = parse_day(data.get("invoice_date")), parse_day(data.get("due_date"))
+    except ValueError: return jsonify(error="Datum muss im ISO-Format YYYY-MM-DD stehen."), 400
+    invoice = FinanceInvoice(owner_id=user.id, provider="manual", vendor=vendor,
+        invoice_number=str(data.get("invoice_number",""))[:128], description=str(data.get("description",""))[:1000],
+        amount=amount, currency=str(data.get("currency","EUR")).upper()[:8], invoice_date=invoice_date, due_date=due_date,
+        attachment_name=str(data.get("attachment_name",""))[:255], source_url="")
+    db.session.add(invoice); db.session.commit()
+    audit("global:"+user.email,"finance.invoice.create",None,str(invoice.id))
+    return jsonify(invoice=_finance_invoice_payload(invoice)), 201
+
+@app.post("/api/global/finance/invoices/<int:invoice_id>/paid")
+def global_finance_invoice_paid(invoice_id):
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    invoice = FinanceInvoice.query.filter_by(id=invoice_id, owner_id=user.id).with_for_update().first_or_404()
+    invoice.status = "paid"; invoice.paid_at = datetime.now(timezone.utc)
+    db.session.commit(); audit("global:"+user.email,"finance.invoice.paid",None,str(invoice.id))
+    return jsonify(ok=True, invoice=_finance_invoice_payload(invoice))
+
+@app.post("/api/global/finance/invoices/<int:invoice_id>/costs")
+def global_finance_invoice_cost(invoice_id):
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    invoice = FinanceInvoice.query.filter_by(id=invoice_id, owner_id=user.id).first_or_404()
+    data = request.get_json(silent=True) or {}
+    try: amount = Decimal(str(data.get("amount",""))).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError): return jsonify(error="Ungültiger Zusatzbetrag."), 400
+    if amount <= 0 or amount > Decimal("10000000"): return jsonify(error="Zusatzbetrag muss positiv sein."), 400
+    kind = str(data.get("type","other"))
+    if kind not in {"inkasso","mahnung","gebuehr","zinsen","other"}: kind="other"
+    desc = str(data.get("description","")).strip()[:500]
+    if not desc: return jsonify(error="Bitte Zusatzkosten beschreiben."), 400
+    db.session.add(FinanceInvoiceCost(invoice_id=invoice.id, owner_id=user.id, cost_type=kind, description=desc, amount=amount))
+    if invoice.status == "paid": invoice.status="open"; invoice.paid_at=None
+    db.session.commit(); audit("global:"+user.email,"finance.invoice.cost.add",None,str(invoice.id))
+    return jsonify(ok=True, invoice=_finance_invoice_payload(invoice)), 201
+
+@app.get("/api/global/finance/plan")
+def global_finance_plan_get():
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    plan = FinancePlan.query.filter_by(owner_id=user.id).first()
+    rows = FinanceInvoice.query.filter_by(owner_id=user.id, status="open").all()
+    open_total = Decimal("0.00")
+    for inv in rows:
+        extra = sum((Decimal(str(x.amount)) for x in FinanceInvoiceCost.query.filter_by(invoice_id=inv.id, owner_id=user.id).all()), Decimal("0.00"))
+        open_total += Decimal(str(inv.amount)) + extra
+    capacity = Decimal(str(plan.monthly_payment_capacity)) if plan else Decimal("0.00")
+    months = int((open_total / capacity).to_integral_value(rounding=ROUND_UP)) if capacity > 0 else None
+    return jsonify(plan={"monthly_budget":str(plan.monthly_budget) if plan else "0.00","monthly_payment_capacity":str(capacity),"notes":plan.notes if plan else ""},
+        open_total=str(open_total), estimated_months=months, monthly_needed=str((open_total/months).quantize(Decimal("0.01")) if months else open_total))
+
+@app.put("/api/global/finance/plan")
+def global_finance_plan_update():
+    user = current_global_user()
+    if not user: return jsonify(error="Anmeldung erforderlich."), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        budget=Decimal(str(data.get("monthly_budget","0"))).quantize(Decimal("0.01"))
+        capacity=Decimal(str(data.get("monthly_payment_capacity","0"))).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError): return jsonify(error="Ungültige Planbeträge."), 400
+    if budget < 0 or capacity < 0 or budget > Decimal("10000000") or capacity > budget:
+        return jsonify(error="Monatsbudget und Rate müssen positiv sein; die Rate darf das Budget nicht überschreiten."), 400
+    plan=FinancePlan.query.filter_by(owner_id=user.id).first()
+    if not plan: plan=FinancePlan(owner_id=user.id); db.session.add(plan)
+    plan.monthly_budget=budget; plan.monthly_payment_capacity=capacity; plan.notes=str(data.get("notes",""))[:2000]
+    db.session.commit(); audit("global:"+user.email,"finance.plan.update",None,str(user.id))
+    return global_finance_plan_get()
+
+@app.get("/admin/finance")
+@admin_required
+def admin_finance():
+    # Superadmin gets aggregate counts only; individual mailbox contents remain private to each account.
+    users = db.session.query(FinanceInvoice.owner_id).distinct().count()
+    open_count = FinanceInvoice.query.filter_by(status="open").count()
+    paid_count = FinanceInvoice.query.filter_by(status="paid").count()
+    open_sum = db.session.query(func.coalesce(func.sum(FinanceInvoice.amount),0)).filter_by(status="open").scalar()
+    providers = EmailProviderAccount.query.count()
+    return render_template_string(FINANCE_ADMIN_HTML, users=users, open_count=open_count, paid_count=paid_count,
+        open_sum=open_sum, providers=providers, owner_email=ADMIN_OWNER_EMAIL)
+
 @app.get("/admin/wallets")
 @admin_required
 def admin_wallets():
@@ -2585,13 +2785,15 @@ def admin_overview():
     sites = Site.query.order_by(Site.name).all()
     return jsonify(sites=[{"slug": s.slug, "name": s.name, "origin": s.origin, "members": Member.query.filter_by(site_id=s.id).count(), "active": s.is_active} for s in sites], total_members=sum(Member.query.filter_by(site_id=s.id).count() for s in sites))
 
+FINANCE_ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Finanzübersicht</title><style>body{background:#080b14;color:#edf1ff;font:15px system-ui;max-width:1000px;margin:30px auto;padding:18px}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.n{font-size:27px;font-weight:800}a{color:#8ce4f0}.muted{color:#a8b4cd;font-size:12px}</style><h1>✦ ULTIMA · Finanzverwaltung</h1><p><a href="/admin">← Control Center</a> · <span class="muted">Superadmin: {{owner_email}}</span></p><div class="grid"><section class="card"><small>Benutzer mit Rechnungen</small><div class="n">{{users}}</div></section><section class="card"><small>Offene Rechnungen</small><div class="n">{{open_count}}</div></section><section class="card"><small>Als bezahlt markiert</small><div class="n">{{paid_count}}</div></section><section class="card"><small>Provider-Kontoverbindungen</small><div class="n">{{providers}}</div></section></div><section class="card"><h2>Datenschutz</h2><p>Diese Verwaltungsübersicht zeigt nur aggregierte Zahlen. Einzelne E-Mail-Inhalte, Rechnungen und Anhänge bleiben im jeweiligen Benutzerkonto privat.</p><p>OAuth-Verbindungen sind noch nicht aktiv: Anbieter-Client-IDs, sichere Callback-Routen und verschlüsselte Token-Verwahrung müssen vor dem Mailimport eingerichtet und getestet werden.</p></section></html>"""
+
 SETUP_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Setup</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:520px;margin:8vh auto;padding:24px"><h1>ULTIMA · Erstadministrator</h1><p>Einmalige sichere Einrichtung. Das Setup-Token wird nicht gespeichert.</p><form id="f"><input id="email" type="email" placeholder="Admin-E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="password" type="password" placeholder="Passwort (mind. 14 Zeichen)" required style="display:block;width:100%;padding:12px;margin:10px 0"><input id="token" type="password" placeholder="Setup-Token" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Administrator anlegen</button></form><pre id="out"></pre><script>f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,setup_token:token.value})});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Admin Login</title><body style="font:16px system-ui;background:#090d18;color:#fff;max-width:440px;margin:10vh auto;padding:24px"><h1>ULTIMA Control Center</h1><p>Administrator-Anmeldung</p>{% if error %}<p style="color:#ff9c9c">{{error}}</p>{% endif %}<form method="post"><input name="email" type="email" placeholder="E-Mail" required style="display:block;width:100%;padding:12px;margin:10px 0"><input name="password" type="password" placeholder="Passwort" required style="display:block;width:100%;padding:12px;margin:10px 0"><button style="padding:12px 18px">Anmelden</button></form></body></html>"""
 WALLETS_ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Wallet-Verwaltung</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}main{max-width:1100px;margin:30px auto;padding:0 18px}header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}a{color:#8ce4f0}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}input,select,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px;max-width:100%}button{cursor:pointer;background:#293b68}.addr{overflow-wrap:anywhere;font:12px ui-monospace,monospace;color:#8ce4f0}.muted{color:#a8b4cd;font-size:12px}.warn{border-color:#78602e;color:#f0d69d}form{margin:0}</style><main><header><div><h1>₿ ULTIMA Wallet-Verwaltung</h1><p class="muted">Zentrale Übersicht öffentlicher Wallet-Adressen · Inhaber: {{owner_email}}</p></div><nav><a href="/admin">← Control Center</a> · <a href="/admin/business-studio">Business Studio →</a></nav></header><section class="card warn"><b>Schlüsselsicherheit:</b> Hier werden ausschließlich öffentliche Empfangs-/Portfolio-Adressen verwaltet. Keine Seed-Phrasen, Private Keys oder Signaturdaten eintragen. Es gibt keine Verwahrung und keine automatische Transaktionsfreigabe. Die zentrale Bitcoin-Adresse ist {{'als Render-Variable konfiguriert' if btc_configured else 'aus dem bekannten Projektkontext vorbefüllt; Render-Variable BTC_RECEIVE_ADDRESS ist noch zu konfigurieren'}}.</section><h2>Registrierte Wallets ({{wallets|length}})</h2><div class="grid">{% for w in wallets %}<article class="card"><b>{{w.label}}</b><p class="muted">{{w.network}} · {{w.purpose}}</p><p class="addr">{{w.address}}</p><p class="muted">{{w.owner_scope}} · hinzugefügt {{w.created_at}}</p>{% if not (w.network == 'Bitcoin' and w.address == 'bc1q4q7lujkr8mcv9e7suet524uxjfwlaxm7aelq5y') %}<form method="post" action="/admin/wallets/{{w.id}}/delete"><input type="hidden" name="csrf" value="{{csrf}}"><button>Eintrag entfernen</button></form>{% endif %}</article>{% else %}<p>Noch keine Wallet eingetragen.</p>{% endfor %}</div><section class="card"><h2>Weitere eigene Wallet hinzufügen</h2><p class="muted">Trage hier nur öffentliche Adressen ein. Nutzer- oder Unternehmens-Wallets werden nicht automatisch aus Apps ausgelesen.</p><form method="post" action="/admin/wallets"><input type="hidden" name="csrf" value="{{csrf}}"><p><input name="label" placeholder="Bezeichnung, z. B. Krypto-Aurora Treasury" required></p><p><select name="network" required><option value="">Netzwerk wählen</option><option>Bitcoin</option><option>Solana</option><option>Ethereum</option><option>Polygon</option><option>Base</option><option>BNB Chain</option><option>Other EVM</option></select><input name="address" placeholder="Öffentliche Wallet-Adresse" required style="width:min(600px,90%)"></p><p><input name="purpose" placeholder="Zweck (optional)" style="width:min(600px,90%)"></p><button>Wallet registrieren</button></form></section><p class="muted">Wallets werden in der ULTIMA-Datenbank gespeichert. Kontostände, Token-Metadaten und Transaktionen benötigen je Netzwerk einen separaten, geprüften Read-only-Provider.</p></main></html>"""
 
 BUSINESS_STUDIO_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Business Studio</title><style>body{margin:0;background:radial-gradient(ellipse at 60% -20%,#26395d,transparent 55%),#080b14;color:#edf1ff;font:15px system-ui}main{max-width:1200px;margin:28px auto;padding:0 18px}header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}a{color:#8ce4f0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:15px;padding:18px;min-width:0}.muted{color:#a8b4cd;font-size:12px}.stat{font-size:28px;font-weight:800}.pill{display:inline-block;padding:4px 8px;border:1px solid #3b5970;border-radius:99px;color:#9fe7e9;font-size:11px}.url{overflow-wrap:anywhere}.section{margin:28px 0}.wallet{background:linear-gradient(120deg,#1a2940,#10212d);border-color:#78653c}</style><main><header><div><h1>✦ ULTIMA Business Studio</h1><p class="muted">Deine eigene Polsia-inspirierte Verwaltungszentrale für Unternehmen, KI-Produkte und Websites.</p></div><nav><a href="/admin">← Control Center</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a></nav></header><div class="grid"><section class="card"><div class="muted">REGISTRIERTE WEBPLATTFORMEN</div><div class="stat">{{sites|length}}</div></section><section class="card"><div class="muted">EIGENE PROJEKT-EINTRÄGE</div><div class="stat">{{projects|length}}</div></section><section class="card"><div class="muted">GLOBALE BENUTZER</div><div class="stat">{{users}}</div></section></div><section class="section"><h2>Unternehmen & Plattformen</h2><p class="muted">Die vorhandenen ULTIMA-Websites werden als Geschäftsbereiche dargestellt. Dies ist ein Service-/Projektportfolio, kein Nachweis einer rechtlich eingetragenen Gesellschaft oder ihrer Eigentumsverhältnisse.</p><div class="grid">{% for s in sites %}<article class="card"><span class="pill">{{'Aktiv' if s.is_active else 'Deaktiviert'}}</span><h3>{{s.name}}</h3><p class="muted">{{s.slug}} · Mitgliedschaft {{'aktiviert' if s.membership_enabled else 'deaktiviert'}}</p><p class="url"><a href="{{s.origin}}" target="_blank" rel="noopener">{{s.origin}}</a></p><a href="/admin/site/{{s.slug}}">Website verwalten →</a></article>{% else %}<p>Keine Websites in der Datenbank registriert.</p>{% endfor %}</div></section><section class="section"><h2>Ideen, Produkte & neue Unternehmensprojekte</h2><div class="grid">{% for p in projects %}<article class="card"><span class="pill">{{p.status}} · {{p.category}}</span><h3>{{p.name}}</h3><p>{{p.description}}</p><p class="url"><a href="{{p.url}}" target="_blank" rel="noopener">{{p.url}}</a></p><p class="muted">Eigentümer-Konto: {{p.owner.email}}</p></article>{% else %}<p class="muted">Noch keine zusätzlichen Nutzer-Projekte registriert.</p>{% endfor %}</div><p><a href="/admin/website-projects">Projektfreigaben und Veröffentlichungen verwalten →</a></p></section><section class="card wallet"><h2>Wallets & Treasury</h2><p>Die zentrale Wallet-Verwaltung bündelt bekannte Empfangsadressen und weitere öffentliche Unternehmens-Wallets.</p><a href="/admin/wallets">Wallet Hub öffnen →</a></section><section class="card"><h2>Operative Steuerung</h2><p>Mitglieder, Premium, Bestellungen, Rechnungen, Freigaben, Site-Health und Audit-Protokolle bleiben über das ULTIMA Control Center erreichbar.</p><a href="/admin">Zum Control Center →</a></section><p class="muted">Polsia-inspiriertes eigenes Business Studio. Keine Verbindung zu Polsia Inc. und kein vollständiger Klon eines fremden Dienstes.</p></main></html>"""
 
-ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><a href="/admin/company">Company Desk ↗</a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/business-studio">✦ ULTIMA Business Studio · Polsia-inspirierte Unternehmenszentrale →</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a> · <a href="/admin/website-projects">🌐 Öffentliche Website-Projekte verwalten →</a> · <a href="/portal">Globales Konto & Website-Studio öffnen →</a> · <a href="/admin/mentors">Mentorprofile freigeben →</a></p><p><a href="/admin/credits">Legacy-Credit-Review →</a> · <a href="/admin/premium">✦ Network Premium →</a> · <a href="/admin/memberships">Mitgliedschaftsanträge verwalten →</a> · <a href="/admin/holiday-access">Feiertags-Vollzugriff / Testtag →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-inspiriert</h3><p>Unternehmensportfolio, Websites, KI-Projekte und operative Verwaltung an einem Ort.</p><a href="/admin/business-studio">Business Studio öffnen →</a></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
+ADMIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA Control Center</title><style>body{margin:0;background:#080b14;color:#edf1ff;font:15px system-ui}header{padding:22px 5vw;border-bottom:1px solid #26304a;display:flex;justify-content:space-between}main{max-width:1100px;margin:30px auto;padding:0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:#11182a;border:1px solid #26304a;border-radius:16px;padding:18px}input,button{padding:11px;border-radius:9px;border:1px solid #36415f;background:#0b1222;color:#fff;margin:4px}button{cursor:pointer;background:#293b68}a{color:#8ce4f0}small{color:#a8b4cd}.stat{font-size:28px;font-weight:800}</style><header><b>✦ ULTIMA CONTROL CENTER</b><a href="/admin/company">Company Desk ↗</a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{csrf}}"><button>Abmelden</button></form></header><main><h1>Plattformverwaltung</h1><p><a href="/admin/business-studio">✦ ULTIMA Business Studio · Polsia-inspirierte Unternehmenszentrale →</a> · <a href="/admin/wallets">₿ Wallet-Verwaltung →</a> · <a href="/admin/website-projects">🌐 Öffentliche Website-Projekte verwalten →</a> · <a href="/portal">Globales Konto & Website-Studio öffnen →</a> · <a href="/admin/mentors">Mentorprofile freigeben →</a></p><p><a href="/admin/credits">Legacy-Credit-Review →</a> · <a href="/admin/premium">✦ Network Premium →</a> · <a href="/admin/memberships">Mitgliedschaftsanträge verwalten →</a> · <a href="/admin/holiday-access">Feiertags-Vollzugriff / Testtag →</a></p><p><a href="/cyber-shield">◈ Cyber Shield · Sicherheitszentrale öffnen →</a></p><p>Zentrale Inhaberkontrolle · einzelne Webseiten mit getrennten Integrationsschlüsseln · lokale Rollen ohne Superadmin-Rechte</p><div class="grid"><section class="card"><small>ALLEINIGER SUPERADMIN / INHABER</small><h2>{{owner_email}}</h2><p><b>ULTIMA Owner</b> · Vollzugriff auf die zentrale Verwaltung</p><small>Weitere E-Mail-Adressen werden beim zentralen Admin-Login abgewiesen. Sitzungs-Timeout: 30 Minuten Inaktivität, maximal 8 Stunden.</small></section><section class="card"><small>ZENTRALE ADMIN-KONTEN</small><div class="stat">{{admin_accounts}}</div><p><small>Erlaubte Inhaberadresse: {{owner_email}} · andere Konten werden durch die Zugriffskontrolle blockiert.</small></p></section><section class="card"><h3>Commerce Hub · Shopify-ähnlich</h3><p>Bestellungen, Rechnungen, Zahlungs- und Versandstatus sowie Shop-Webhooks zentral verwalten.</p><a href="#orders">Zu Bestellungen ↓</a></section><section class="card"><h3>Business Studio · Polsia-inspiriert</h3><p>Unternehmensportfolio, Websites, KI-Projekte und operative Verwaltung an einem Ort.</p><a href="/admin/business-studio">Business Studio öffnen →</a><p><a href="/admin/finance">Finanzverwaltung & Rechnungsübersicht →</a></p></section><section class="card"><h3>Integrierte Automations-Bots</h3><p>Site Health · Member Guard · Order Monitor · Audit Watch. Prüfungen sind lesend; Zahlungen bleiben manuell.</p><form method="post" action="/admin/bots/run/site-health"><input type="hidden" name="csrf" value="{{csrf}}"><button>Site Health Bot starten</button></form><form method="post" action="/admin/bots/run/member-guard"><input type="hidden" name="csrf" value="{{csrf}}"><button>Member Guard starten</button></form><form method="post" action="/admin/bots/run/order-monitor"><input type="hidden" name="csrf" value="{{csrf}}"><button>Order Monitor starten</button></form><form method="post" action="/admin/bots/run/audit-watch"><input type="hidden" name="csrf" value="{{csrf}}"><button>Audit Watch starten</button></form><a href="/admin/credits">Credit-Review öffnen →</a></section></div><div class="grid"><section class="card"><small>MITGLIEDER GESAMT</small><div class="stat">{{total}}</div></section><section class="card"><small>PLATTFORMEN</small><div class="stat">{{sites|length}}</div></section></div><h2>Einmalige Registrierungscodes</h2><section class="card"><p>Jeder neue Account benötigt einen individuellen Code. Er gilt nur für eine Webseite, einmalig und sieben Tage.</p><form method="post" action="/admin/invites/create"><input type="hidden" name="csrf" value="{{csrf}}"><select name="site_slug" required>{% for item in sites %}{% if item.site.is_active and item.site.membership_enabled %}<option value="{{item.site.slug}}">{{item.site.name}}</option>{% endif %}{% endfor %}</select><button>Einmaligen Code erzeugen</button></form><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th>Aktion</th></tr>{% for c in invite_codes %}<tr><td>{{c.site.name}}</td><td>{{c.created_at}}</td><td>{{c.expires_at}}</td><td>{% if c.used_at %}Verwendet{% elif c.revoked_at %}Widerrufen{% elif c.expires_at <= now %}Abgelaufen{% else %}Aktiv{% endif %}</td><td>{% if not c.used_at and not c.revoked_at and c.expires_at > now %}<form method="post" action="/admin/invites/{{c.id}}/revoke"><input type="hidden" name="csrf" value="{{csrf}}"><button>Widerrufen</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Noch keine Codes erzeugt.</td></tr>{% endfor %}</table></section><h2 id="sites">Webseiten & Geschäftsprojekte integrieren</h2><form method="post" action="/admin/sites" class="card"><input type="hidden" name="csrf" value="{{csrf}}"><input name="name" placeholder="Webseitenname" required><input name="slug" placeholder="slug-zum-beispiel" required><input name="origin" placeholder="https://deine-seite.onrender.com" required><button>Webseite hinzufügen</button></form><h2 id="orders">Bestellungen & Rechnungen · {{order_total}} Bestellungen</h2><section class="card"><table width="100%" cellpadding="8"><tr><th>Webseite</th><th>Bestellung</th><th>Kunde</th><th>Betrag</th><th>Zahlung</th><th>Versand</th><th>Rechnung</th></tr>{% for o in orders %}<tr><td>{{o.site.name}}</td><td>{{o.order_number}}</td><td>{{o.customer_name}}<br><small>{{o.customer_email}}</small></td><td>{{o.total_amount}} {{o.currency}}</td><td>{{o.payment_status}}</td><td>{{o.fulfillment_status}}</td><td><a href="/admin/order/{{o.id}}/invoice">Rechnung öffnen</a></td></tr>{% endfor %}</table></section><h2>Mitgliedschaften pro Webseite</h2><div class="grid">{% for item in sites %}<section class="card"><h3>{{item.site.name}}</h3><small>{{item.site.origin}}</small><div class="stat">{{item.count}}</div><p><a href="/admin/site/{{item.site.slug}}">Mitglieder verwalten →</a></p><small>{{item.admins}} lokale Administratoren · {{item.orders}} Bestellungen · {{'aktiv' if item.site.is_active else 'deaktiviert'}}</small></section>{% endfor %}</div><h2>Bitcoin-Zahlungen zur Prüfung</h2><section class="card"><p>Empfangsadresse: <b>{{wallet or "Noch nicht konfiguriert"}}</b> · Bitcoin mainnet</p>{% for p in payments %}<p>{{p.created_at}} · {{p.site.name}} · Mitglied #{{p.member_id}} · ${{p.amount_usd}} / {{p.credits}} Credits · TXID: <code>{{p.txid}}</code><form method="post" action="/admin/payment/{{p.id}}/approve" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Zahlung bestätigen & Credits gutschreiben</button></form><form method="post" action="/admin/payment/{{p.id}}/reject" style="display:inline"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ablehnen</button></form></p>{% else %}<small>Keine offenen Zahlungen.</small>{% endfor %}</section><h2>Letzte Verwaltungsaktionen</h2><section class="card">{% for log in logs %}<p><small>{{log.created_at}} · {{log.actor}} · {{log.action}} · {{log.site_slug or 'global'}}</small></p>{% else %}<small>Noch keine Aktionen.</small>{% endfor %}</section></main></html>"""
 TOKEN_ONCE_HTML = """<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTIMA · Token einmalig anzeigen</title><body style="background:#080b14;color:#edf1ff;font:16px system-ui;max-width:760px;margin:8vh auto;padding:24px"><h1>Neuer Integrationstoken</h1><p>Website: {{site.name}}</p><p><b>Dieser Token wird nur jetzt angezeigt.</b> Kopiere ihn in die Secret-/Environment-Einstellungen der angebundenen Website. Er wird nicht erneut gespeichert oder angezeigt.</p><pre id="token" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#11182a;padding:18px;border-radius:12px">{{token}}</pre><button onclick="navigator.clipboard.writeText(document.getElementById('token').textContent)">Token kopieren</button> <a href="/admin/site/{{site.slug}}" style="color:#8ce4f0">Zurück zur Website</a></body></html>"""
 SITE_HTML = """<!doctype html>
 <html lang="de">
