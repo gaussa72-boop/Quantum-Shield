@@ -668,6 +668,29 @@ def admin_required(fn):
 def admin_csrf_ok():
     return bool(session.get("csrf") and secrets.compare_digest(session["csrf"], request.form.get("csrf", "")))
 
+# CYBER SHIELD application-layer firewall. This blocks clearly malicious
+# traversal, script-injection and common SQL-injection probes before routing.
+# Keep edge/WAF protection enabled at the hosting/DNS layer as a second boundary.
+CYBER_SHIELD_WAF_ENABLED = os.getenv("CYBER_SHIELD_WAF_ENABLED", "true").strip().lower() == "true"
+CYBER_SHIELD_RULES = [
+    ("path_traversal", re.compile(r"(?i)(?:\.\./|%2e%2e(?:%2f|/)|%00)")),
+    ("script_injection", re.compile(r"(?i)(?:<\s*script\b|javascript\s*:|\bonerror\s*=|\bonload\s*=)")),
+    ("sql_injection_probe", re.compile(r"(?i)(?:\bunion\s+select\b|\bsleep\s*\(|\bbenchmark\s*\(|\bor\s+['\"]?1['\"]?\s*=\s*['\"]?1)")),
+]
+
+@app.before_request
+def cyber_shield_firewall():
+    if not CYBER_SHIELD_WAF_ENABLED or request.method == "OPTIONS":
+        return None
+    probe = request.path + "\n" + request.query_string.decode("utf-8", "ignore")
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.mimetype in {"application/json", "application/x-www-form-urlencoded", "text/plain"}:
+        probe += "\n" + request.get_data(cache=True, as_text=True)[:65536]
+    for rule_name, pattern in CYBER_SHIELD_RULES:
+        if pattern.search(probe):
+            app.logger.warning("Cyber Shield blocked request rule=%s ip=%s path=%s", rule_name, get_remote_address(), request.path[:180])
+            return jsonify(error="Anfrage durch Cyber Shield blockiert.", rule=rule_name), 400
+    return None
+
 @app.after_request
 def security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -675,9 +698,14 @@ def security_headers(response):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    response.headers.setdefault("X-XSS-Protection", "0")
+    if app.config.get("SESSION_COOKIE_SECURE"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("Cache-Control", "no-store" if request.path.startswith("/api/") or request.path.startswith("/admin") else "public, max-age=60")
     origin = request.headers.get("Origin", "").rstrip("/")
-    if origin in ALLOWED_ORIGINS or Site.query.filter_by(origin=origin, is_active=True).first():
+    if origin in ALLOWED_ORIGINS or (origin and Site.query.filter_by(origin=origin, is_active=True).first()):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
