@@ -845,7 +845,7 @@ def register(slug):
     db.session.add(member)
     if invite:
         invite.used_at = now
-    if approved_application:
+    if approved_application and approved_application.site_slug != "global":
         approved_application.status = "registered"
     db.session.commit()
     audit("member:" + email, "member.register", site.slug, str(member.id))
